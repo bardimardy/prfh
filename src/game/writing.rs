@@ -96,10 +96,28 @@ impl WritingEngine {
         };
         self.trail.push(tile.clone());
 
+        // Step in the CURRENT direction first — the char that completes a trigger
+        // word still writes in the old direction. The NEW direction takes effect
+        // on the next char.
+        if self.paused {
+            // Stop-trigger fired previously: overwrite this char in place, then unpause.
+            self.paused = false;
+        } else {
+            let (dx, dy) = self.direction.delta();
+            self.cursor = (self.cursor.0 + dx, self.cursor.1 + dy);
+        }
+        self.combo = self.combo.saturating_add(1);
+
         let mut turned_to: Option<Direction> = None;
         let mut stopped = false;
 
         if is_boundary {
+            // Boundary char just resets the word buffer (immediate-mode model
+            // means triggers have already fired the moment the word was complete).
+            self.current_word.clear();
+        } else {
+            self.current_word.push(ch);
+            // Immediate trigger: fire as soon as the buffer matches a trigger word.
             if let Some(trigger) = match_trigger(&self.current_word) {
                 match trigger {
                     Trigger::Direction(d) => {
@@ -115,22 +133,9 @@ impl WritingEngine {
                         stopped = true;
                     }
                 }
+                self.current_word.clear();
             }
-            self.current_word.clear();
-        } else {
-            self.current_word.push(ch);
         }
-
-        if self.paused && !stopped {
-            // Stop-trigger just fired: this char overwrites in place, then unpause.
-            self.paused = false;
-        } else if !self.paused {
-            let (dx, dy) = self.direction.delta();
-            self.cursor = (self.cursor.0 + dx, self.cursor.1 + dy);
-        }
-
-        // Combo: increment on successful write (non-erasure)
-        self.combo = self.combo.saturating_add(1);
 
         if let Some(d) = turned_to {
             StepResult::WroteAndTurned(tile, d)
@@ -138,35 +143,6 @@ impl WritingEngine {
             StepResult::WroteAndStopped(tile)
         } else {
             StepResult::Wrote(tile)
-        }
-    }
-
-    /// Newline: jump to next line, reset direction to Right.
-    pub fn on_newline(&mut self) {
-        self.cursor = (0, self.cursor.1 + 1);
-        self.direction = Direction::Right;
-        self.current_word.clear();
-    }
-
-    /// Flush the current word as if a boundary was hit, without writing a char or stepping.
-    /// Returns Some(Direction) if the flush turned us, None otherwise.
-    pub fn flush_word(&mut self) -> Option<Direction> {
-        let trigger = match_trigger(&self.current_word);
-        self.current_word.clear();
-        match trigger {
-            Some(Trigger::Direction(d)) => {
-                self.direction = d;
-                Some(d)
-            }
-            Some(Trigger::Back) => {
-                self.direction = self.direction.opposite();
-                Some(self.direction)
-            }
-            Some(Trigger::Stop) => {
-                self.paused = true;
-                None
-            }
-            None => None,
         }
     }
 
@@ -203,41 +179,46 @@ mod tests {
     }
 
     #[test]
-    fn up_trigger_changes_direction_after_boundary() {
+    fn up_triggers_immediately_no_space_needed() {
         let mut e = WritingEngine::new((0, 0));
-        for ch in "go up ".chars() {
+        e.on_char('u');
+        e.on_char('p');
+        // Trigger fired the moment "up" was complete.
+        assert_eq!(e.direction, Direction::Up);
+        // The 'p' itself still wrote in the OLD direction (Right).
+        assert_eq!(e.cursor, (2, 0));
+        // The next char goes up.
+        e.on_char('x');
+        assert_eq!(e.cursor, (2, -1));
+    }
+
+    #[test]
+    fn upgrade_also_triggers_up_immediate_mode() {
+        // In immediate-mode, "upgrade" fires up after 'p', then "grade" goes up.
+        let mut e = WritingEngine::new((0, 0));
+        for ch in "upgrade".chars() {
             e.on_char(ch);
         }
-        // 'g','o',' ','u','p',' ' — 6 steps right (1 each), then direction up
         assert_eq!(e.direction, Direction::Up);
     }
 
     #[test]
-    fn upgrade_does_not_trigger_up() {
+    fn down_triggers_immediately() {
         let mut e = WritingEngine::new((0, 0));
-        for ch in "upgrade ".chars() {
-            e.on_char(ch);
-        }
-        assert_eq!(e.direction, Direction::Right);
-    }
-
-    #[test]
-    fn down_trigger_changes_to_down() {
-        let mut e = WritingEngine::new((0, 0));
-        for ch in "go down ".chars() {
+        for ch in "down".chars() {
             e.on_char(ch);
         }
         assert_eq!(e.direction, Direction::Down);
     }
 
     #[test]
-    fn back_reverses_direction() {
+    fn back_reverses_immediately() {
         let mut e = WritingEngine::new((0, 0));
-        for ch in "go up ".chars() {
+        for ch in "up".chars() {
             e.on_char(ch);
         }
         assert_eq!(e.direction, Direction::Up);
-        for ch in "back ".chars() {
+        for ch in "back".chars() {
             e.on_char(ch);
         }
         assert_eq!(e.direction, Direction::Down);
@@ -258,70 +239,51 @@ mod tests {
     }
 
     #[test]
-    fn flush_word_triggers_without_stepping() {
-        let mut e = WritingEngine::new((0, 0));
-        e.on_char('u');
-        e.on_char('p');
-        let start = e.cursor;
-        let turned = e.flush_word();
-        assert_eq!(turned, Some(Direction::Up));
-        assert_eq!(e.direction, Direction::Up);
-        assert_eq!(e.cursor, start, "flush_word should not move cursor");
-        assert!(e.current_word.is_empty());
-    }
-
-    #[test]
-    fn flush_word_with_no_match_returns_none() {
-        let mut e = WritingEngine::new((0, 0));
-        e.on_char('h');
-        e.on_char('i');
-        assert_eq!(e.flush_word(), None);
-        assert_eq!(e.direction, Direction::Right);
-    }
-
-    #[test]
-    fn punctuation_acts_as_boundary() {
+    fn punctuation_clears_buffer_without_trigger() {
+        // Punctuation no longer triggers (immediate-mode already triggered on 'p').
         let mut e = WritingEngine::new((0, 0));
         for ch in "up.".chars() {
             e.on_char(ch);
         }
+        // Trigger fired on 'p'. Punct resets buffer. Direction is still Up.
         assert_eq!(e.direction, Direction::Up);
+        assert!(e.current_word.is_empty());
     }
 
     #[test]
-    fn left_trigger_moves_cursor_left_after_space() {
+    fn left_triggers_immediately() {
         let mut e = WritingEngine::new((0, 0));
-        for ch in "left ".chars() {
+        for ch in "left".chars() {
             e.on_char(ch);
         }
-        // 'l','e','f','t' = 4 right steps, then space: trigger Left + step left.
+        // 'l','e','f','t' wrote going right (4 steps), trigger fires on 't'.
         assert_eq!(e.direction, Direction::Left);
-        assert_eq!(e.cursor, (3, 0));
-        // Next char goes further left.
+        assert_eq!(e.cursor, (4, 0));
+        // Next char goes left.
         e.on_char('x');
-        assert_eq!(e.cursor, (2, 0));
+        assert_eq!(e.cursor, (3, 0));
     }
 
     #[test]
-    fn right_trigger_keeps_default_direction() {
+    fn right_triggers_immediately() {
         let mut e = WritingEngine::new((0, 0));
-        for ch in "right ".chars() {
+        for ch in "right".chars() {
             e.on_char(ch);
         }
         assert_eq!(e.direction, Direction::Right);
-        assert_eq!(e.cursor, (6, 0)); // 5 chars + 1 step right after trigger
+        assert_eq!(e.cursor, (5, 0));
     }
 
     #[test]
-    fn stop_pauses_then_overwrites_then_resumes() {
+    fn stop_triggers_immediately_and_pauses_next_char() {
         let mut e = WritingEngine::new((0, 0));
-        for ch in "stop ".chars() {
+        for ch in "stop".chars() {
             e.on_char(ch);
         }
-        // 's','t','o','p' = 4 right steps, then space: stop trigger, paused=true, no step.
+        // 's','t','o','p' wrote going right (4 steps), trigger fired on 'p'.
         assert_eq!(e.cursor, (4, 0));
         assert!(e.paused);
-        // Next char overwrites in place, unpauses, but doesn't step yet.
+        // Next char overwrites in place, unpauses, but doesn't step.
         e.on_char('x');
         assert_eq!(e.cursor, (4, 0));
         assert!(!e.paused);
@@ -338,19 +300,6 @@ mod tests {
         assert_eq!(e.combo, 2);
         e.on_backspace();
         assert_eq!(e.combo, 0);
-    }
-
-    #[test]
-    fn newline_resets_to_left_edge_and_right_direction() {
-        let mut e = WritingEngine::new((0, 0));
-        for ch in "up ".chars() {
-            e.on_char(ch);
-        }
-        assert_eq!(e.direction, Direction::Up);
-        let prev_y = e.cursor.1;
-        e.on_newline();
-        assert_eq!(e.cursor, (0, prev_y + 1));
-        assert_eq!(e.direction, Direction::Right);
     }
 
     #[test]

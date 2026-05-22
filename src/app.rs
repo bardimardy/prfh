@@ -70,13 +70,8 @@ impl App {
 
     pub fn on_enter(&mut self) {
         if matches!(self.mode, Mode::World) {
-            match self.writing.flush_word() {
-                Some(d) => self.last_event = format!("⏎ turned: {:?}", d),
-                None => {
-                    self.writing.on_newline();
-                    self.last_event = "⏎ newline — direction reset to →".into();
-                }
-            }
+            // In immediate-mode, triggers fire as soon as the word is typed —
+            // Enter has no role in World mode. Ignore.
             return;
         }
         if matches!(self.mode, Mode::Shell) {

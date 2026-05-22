@@ -54,26 +54,29 @@ Dein nächster Buchstabe geht nach oben. Deine Sätze biegen ab. Die Welt füllt
 
 **Diagonale (v0.2b):** `upright`, `upleft`, `downright`, `downleft`
 
-### 3.2 Trigger-Regel
+### 3.2 Trigger-Regel — Immediate Mode
 
-**Standard-Modus:** Trigger nur an **Wort-Grenzen** (Leerzeichen davor + danach).
+**Trigger feuern sofort**, sobald die Buchstaben-Sequenz im Wort-Buffer ein Trigger-Wort matched. Kein Space, kein Enter, keine Boundary nötig.
 
-- `go up and away` → Richtung wechselt nach `up`+space ✓
-- `upgrade my skills` → kein Trigger (kein Wort-Boundary nach `up`) ✓
-- `way up` → Trigger ✓ (Newline / EOF zählt auch als Boundary)
+- `up` → nach 'p' wechselt Richtung sofort zu ↑
+- `upgrade` → nach 'p' fired ↑, der Rest (`grade`) geht nach oben („upgrade goes upward")
+- `down` → nach 'n' wechselt Richtung zu ↓
+- Space/Punkt resetet nur den Buffer, ohne Trigger-Logik (der ist schon gefeuert)
 
-**Sloppy-Modus (Accessibility-Option):** Trigger auf jedem Substring-Match — `upgrade` würde sofort nach `p` hochziehen.
+Das ist Feature, nicht Bug: Wörter wie `upgrade`, `downgrade`, `leftover`, `rightful` enthalten Direction-Trigger und die Bewegung visualisiert das.
 
-### 3.3 Was passiert mit dem Trigger-Wort selbst?
+### 3.3 Was passiert mit dem Trigger-Buchstaben selbst?
 
-Das Trigger-Wort *schreibt sich noch in der vorherigen Richtung*. Erst der **nächste** Buchstabe (nach Space oder Punkt) bewegt sich in die neue Richtung. So:
+Der Buchstabe, der das Trigger-Wort komplettiert, schreibt sich noch in der **alten** Richtung. Erst der **nächste** Buchstabe bewegt sich in die neue Richtung.
 
 ```
-fell asleep at desk up_
-                       
-                       i (next char, geht nach oben)
-                       _
-                       
+up_
+   \
+    g  (next char, geht nach oben statt rechts)
+    r
+    a
+    d
+    e
 ```
 
 ---
@@ -88,7 +91,7 @@ fell asleep at desk up_
 | Space | Bewegt + schreibt Leer-Tile (Boundary für Trigger) |
 | `.` `,` `!` `?` | Bewegt + schreibt + Satz-Ende-Boundary |
 | `Backspace` | **Schreitet rückwärts** und löscht den letzten Buchstaben |
-| `Enter` | Newline — springt zum nächsten Zeilenanfang (links unten), Richtung resetet zu → |
+| `Enter` | No-op im World-Mode (keine Newline — würde Mechanik brechen). Nur im Shell-Mode aktiv. |
 | Sonderzeichen `(){}[]<>` | Bewegt + schreibt, hat in Combat besondere Effekte |
 
 ### 4.2 Geschwindigkeit
