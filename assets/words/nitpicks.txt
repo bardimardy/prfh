@@ -1,0 +1,52 @@
+missing semicolon
+prefer const
+unused import
+camelCase
+snake_case_please
+extract method
+magic number
+add tests
+inconsistent naming
+trailing whitespace
+no any types
+prefer composition
+why not async
+add jsdoc
+dead code
+console.log left in
+typo in comment
+prefer arrow function
+hardcoded string
+non-null assertion
+use destructuring
+add readonly
+prefer interface
+naming conventions
+add return type
+this could be a hook
+extract component
+why useState here
+useMemo missing
+useCallback please
+prefer enum
+no magic strings
+add error boundary
+handle the error
+empty catch
+should be private
+prefer composition over inheritance
+nit: extra blank line
+nit: missing newline at EOF
+nit: prefer single quotes
+nit: prefer double quotes
+nit: spaces around operator
+nit: indentation
+nit: line too long
+just a small thing
+could we discuss this
+in our codebase we
+historically we
+let's revisit
+out of scope
+followup PR
+not blocking but
