@@ -12,7 +12,9 @@ Du tippst Shell-Commands, um durch prozedurale Ticket-Räume zu navigieren, käm
 gegen ASCII-Code-Reviewer-Bosse mit eskalierenden Nitpick-PR-Comments und entkommst
 einer Karriere, die rückwärts läuft — ohne es zunächst zu merken.
 
-**Pitch in einem Satz:** *Typing of the Dead × Hades × Severance, gespielt in deinem Terminal.*
+**Pitch in einem Satz:** *Du schreibst die Welt, durch die du läufst — und merkst zu spät, dass du sie längst rückwärts schreibst.*
+
+**Tagline:** *Typing of the Dead × Braid × Severance, gespielt in deinem Terminal.*
 
 ---
 
@@ -44,29 +46,32 @@ einer Karriere, die rückwärts läuft — ohne es zunächst zu merken.
 
 ## 4. Mechaniken
 
-### 4.1 Bewegung (Shell-Command-Navigation)
+### 4.1 Bewegung — „Write-to-Move" (Kernmechanik)
 
-Die Welt ist ein Dateisystem. Du navigierst Räume wie Verzeichnisse.
+**Jeder Tastendruck schreibt ein Zeichen UND ist ein Schritt.** Du bewegst dich, indem du schreibst. Deine Spur bleibt sichtbar. Die Richtung wechselt durch eingebaute Trigger-Wörter (`up`, `down`, `left`, `right`, `back`, `stop`) an Wort-Grenzen.
 
-| Command | Wirkung |
-|---|---|
-| `cd <dir>` | Raum wechseln (north/south/east/west oder Raumname) |
-| `ls` | Inhalt des Raums zeigen (Items, Feinde, Exits) |
-| `cat <file>` | Lore-Fragmente lesen (Slack-Logs, Commits) |
-| `grep <pattern>` | Versteckte Räume aufdecken |
-| `rm <enemy>` | Standard-Angriff (Tippe Wort, das auf Enemy steht) |
-| `sudo <ability>` | Special Ability (Cooldown) |
-| `jetpack` | Vertikaler Boost — limitierter Coffeine-Pool |
-| `git stash` | Notausgang, lässt Items zurück (Panic-Button) |
+**Vollständige Spezifikation:** siehe `docs/05-write-to-move.md`.
 
-**Typing-Modus:** Während Combat erscheinen Wörter über Feinden (Typing-of-the-Dead-Style). Erstes korrektes Zeichen lockt Target, Vertippen = Schaden zurück.
+**Kurzfassung:**
+- Default-Richtung: → (rechts)
+- Trigger-Wörter ändern Richtung am Wort-Ende
+- Backspace = ein Schritt rückwärts + Buchstaben-Löschen, kostet „Doubt"
+- Welt = 2D-Grid pro Raum/„Page", Wände prallen ab, Ränder = Page Break
 
-### 4.2 Combat
+**Shell-Mode als Sub-Mechanik:** Per `Tab` öffnest du einen Shell-Prompt (`ls`, `cd`, `cat`, `grep`, `git stash`) für Inventar/Lore/Notausgang — siehe `docs/05` §7.
 
-- **Standard-Enemies:** Bugs, Merge-Conflicts, Flaky-Tests, Linter-Warnings → tippen, sterben.
-- **Schaden:** Wortlänge + Komplexität (Camelcase, Sonderzeichen, regex-artige Strings).
-- **Combo-System:** Konsekutive fehlerfreie Kills = Multiplier (`x2`, `x4`, „PR APPROVED" bei x10).
-- **Penalty:** Vertippen senkt Combo + verlangsamt dich (sichtbar als „🐛 typo lag" im UI).
+### 4.2 Combat — Through-Type oder Around-Type
+
+Feinde sind **Wörter im Raum** (Bug-Strings wie `undef`, `NPE`, `merge_conflict`). Sie blockieren Tiles.
+
+- **Through-Type:** Tippe das Wort des Enemies als nächstes Wort in deinem Text → Enemy stirbt, dein Text geht durch ihn hindurch → max. Damage + Combo
+- **Around-Type:** Schreib einen Bogen drumherum mit `up`/`down`-Trigger → kein Damage, aber überlebbar
+
+**Damage skaliert** mit Wortlänge, Komplexität (Camelcase, Sonderzeichen), Combo-Multiplier und „Eloquence" (thematisch passende Sätze = Bonus).
+
+**Combo-System:** Konsekutive fehlerfreie Through-Types = Multiplier (`x2`, `x4`, „PR APPROVED" bei `x10`).
+
+**Penalty:** Vertippen resetet Combo. Backspace kostet Doubt (zu viel = Burnout-Risiko).
 
 ### 4.3 Bosse (ASCII Code-Reviewer)
 

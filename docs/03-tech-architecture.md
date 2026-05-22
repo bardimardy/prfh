@@ -216,9 +216,42 @@ loop {
 
 ---
 
-## 7. Shell-Command-Parser
+## 6.5 Write-to-Move Engine (Primary-Mode)
 
-Mini-DSL für In-Game-Commands. Eigener Parser (nicht `clap`), damit Fehler-Feedback diegetisch ist.
+**Kern-Modul:** `game::writing` — verarbeitet jeden Keystroke als Schritt + Zeichen.
+
+```rust
+pub struct WritingEngine {
+    pub cursor: (i32, i32),        // World-Grid-Position
+    pub direction: Direction,       // Up/Down/Left/Right
+    pub trail: Vec<Tile>,           // History (Pos, Char, Style)
+    pub current_word: String,       // Buffer für Trigger-Detection
+    pub combo: u32,
+    pub doubt: u32,
+}
+
+pub enum Direction { Up, Down, Left, Right }
+
+impl WritingEngine {
+    pub fn on_char(&mut self, c: char) -> StepResult {
+        // 1. Word-Boundary erkennen (Space/Punkt/EOF)
+        // 2. Trigger-Word check (up/down/left/right/back/stop)
+        // 3. Position advancen entlang aktueller Direction
+        // 4. Collision-Check (Enemies, Items, Walls)
+        // 5. Trail-Update
+    }
+}
+```
+
+**Trigger-Detection:** State-Machine, die `current_word` akkumuliert und beim Boundary-Token prüft, ob ein Direction-Word matched. Match = `direction` wird nach dem Boundary-Char gewechselt.
+
+**Tests:** Property-Tests mit `proptest` — beliebige Strings dürfen die Engine nicht in invaliden Zustand bringen.
+
+---
+
+## 7. Shell-Command-Parser (Sub-Mode)
+
+Per `Tab` aktiviert. Mini-DSL für In-Game-Commands. Eigener Parser (nicht `clap`), damit Fehler-Feedback diegetisch ist.
 
 ```rust
 enum ShellCommand {

@@ -4,9 +4,11 @@
 
 Ein sadistisches Terminal-Horror-Roguelike über verbitterte Softwareentwickler.
 
-Du tippst Shell-Commands, um durch prozedurale Ticket-Räume zu navigieren, kämpfst gegen ASCII-Code-Reviewer-Bosse mit eskalierenden Nitpick-PR-Comments und entkommst einer Karriere, die rückwärts läuft — ohne es zunächst zu merken.
+**Du schreibst die Welt, durch die du läufst.** Jeder Tastendruck ist ein Zeichen UND ein Schritt. Worte wie `up`, `down`, `left`, `right` ändern deine Richtung. Deine Spur bleibt sichtbar — und merkst zu spät, dass du sie längst rückwärts schreibst.
 
-**Pitch:** *Typing of the Dead × Hades × Severance, gespielt in deinem Terminal.*
+Du kämpfst gegen ASCII-Code-Reviewer-Bosse mit eskalierenden Nitpick-PR-Comments, sammelst Items, indem du sie durchtippst, und entkommst einer Karriere, die rückwärts läuft — ohne es zunächst zu merken.
+
+**Pitch:** *Typing of the Dead × Braid × Severance, gespielt in deinem Terminal.*
 
 ---
 
@@ -22,6 +24,7 @@ Aktuell entstehen die Design-Dokumente. Implementierung startet nach Sign-off au
 - [02 — Twist-Storyboard](docs/02-twist-storyboard.md)
 - [03 — Tech-Architektur](docs/03-tech-architecture.md)
 - [04 — Review-Addendum & Resolutions](docs/04-review-addendum.md)
+- [05 — Write-to-Move (Kern-Mechanik)](docs/05-write-to-move.md) ⭐
 
 ## Core Pillars
 

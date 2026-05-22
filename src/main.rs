@@ -44,6 +44,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result<()> {
                 if key.kind == KeyEventKind::Press {
                     match key.code {
                         KeyCode::Esc => app.should_quit = true,
+                        KeyCode::Tab => app.toggle_mode(),
                         KeyCode::Char(c) => app.on_char(c),
                         KeyCode::Backspace => app.on_backspace(),
                         KeyCode::Enter => app.on_enter(),
