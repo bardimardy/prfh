@@ -1,5 +1,5 @@
 use crate::app::{App, Mode};
-use crate::game::writing::{is_trigger_word, Direction};
+use crate::game::writing::{buffer_ends_with_trigger, Direction};
 use ratatui::{
     layout::{Constraint, Direction as LayoutDirection, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -94,7 +94,7 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let word = &app.writing.current_word;
-    let word_is_trigger = is_trigger_word(word);
+    let word_is_trigger = buffer_ends_with_trigger(word);
     let word_color = if word_is_trigger {
         Color::LightGreen
     } else {

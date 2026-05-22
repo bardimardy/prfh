@@ -45,8 +45,29 @@ pub fn match_trigger(word: &str) -> Option<Trigger> {
     }
 }
 
+const TRIGGER_WORDS: &[&str] = &["right", "down", "left", "back", "stop", "up"];
+
+/// Check whether the suffix of the buffer ends with any trigger word.
+/// Returns the matched trigger. Longest match wins (so "right" is checked
+/// before "up" even though "up" is shorter).
+pub fn match_trigger_suffix(word: &str) -> Option<Trigger> {
+    let lower = word.to_ascii_lowercase();
+    for tw in TRIGGER_WORDS {
+        if lower.ends_with(tw) {
+            return match_trigger(tw);
+        }
+    }
+    None
+}
+
 pub fn is_trigger_word(word: &str) -> bool {
     match_trigger(word).is_some()
+}
+
+/// Returns true if the buffer's lowercase suffix matches any trigger.
+/// Used by the HUD to highlight when the user is about to fire a trigger.
+pub fn buffer_ends_with_trigger(word: &str) -> bool {
+    match_trigger_suffix(word).is_some()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,8 +138,9 @@ impl WritingEngine {
             self.current_word.clear();
         } else {
             self.current_word.push(ch);
-            // Immediate trigger: fire as soon as the buffer matches a trigger word.
-            if let Some(trigger) = match_trigger(&self.current_word) {
+            // Immediate trigger: fire as soon as the buffer's suffix matches
+            // a trigger word. This means "helloup" also fires Up.
+            if let Some(trigger) = match_trigger_suffix(&self.current_word) {
                 match trigger {
                     Trigger::Direction(d) => {
                         self.direction = d;
@@ -309,5 +331,41 @@ mod tests {
         assert!(is_trigger_word("STOP"));
         assert!(!is_trigger_word("upgrade"));
         assert!(!is_trigger_word(""));
+    }
+
+    #[test]
+    fn suffix_trigger_fires_inside_unbroken_sentence() {
+        // No spaces — user types one long string. Triggers must still fire.
+        let mut e = WritingEngine::new((0, 0));
+        for ch in "helloworldup".chars() {
+            e.on_char(ch);
+        }
+        assert_eq!(e.direction, Direction::Up);
+        // After the trigger fires the buffer is cleared.
+        assert!(e.current_word.is_empty());
+        for ch in "down".chars() {
+            e.on_char(ch);
+        }
+        assert_eq!(e.direction, Direction::Down);
+    }
+
+    #[test]
+    fn suffix_trigger_left_after_arbitrary_text() {
+        let mut e = WritingEngine::new((0, 0));
+        for ch in "iwillturnleft".chars() {
+            e.on_char(ch);
+        }
+        assert_eq!(e.direction, Direction::Left);
+    }
+
+    #[test]
+    fn longest_suffix_wins_right_not_t() {
+        // "right" must be matched before any shorter trigger that could
+        // end the same string. (None do, but defensive test.)
+        let mut e = WritingEngine::new((0, 0));
+        for ch in "turnright".chars() {
+            e.on_char(ch);
+        }
+        assert_eq!(e.direction, Direction::Right);
     }
 }
