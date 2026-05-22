@@ -18,6 +18,8 @@ pub struct App {
     /// Sticky trigger banner — set when a trigger fires, decremented per tick.
     pub trigger_banner: Option<String>,
     pub trigger_banner_ticks: u32,
+    pub debug: bool,
+    pub debug_lines: Vec<String>,
 }
 
 impl App {
@@ -32,6 +34,17 @@ impl App {
             last_event: String::from("type to write yourself a path"),
             trigger_banner: None,
             trigger_banner_ticks: 0,
+            debug: false,
+            debug_lines: Vec::new(),
+        }
+    }
+
+    pub fn debug_log<S: Into<String>>(&mut self, line: S) {
+        self.debug_lines.push(line.into());
+        let max = 12;
+        if self.debug_lines.len() > max {
+            let drop = self.debug_lines.len() - max;
+            self.debug_lines.drain(0..drop);
         }
     }
 

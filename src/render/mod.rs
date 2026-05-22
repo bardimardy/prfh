@@ -23,6 +23,44 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_banner(f, chunks[1], app);
     draw_world(f, chunks[2], app);
     draw_bottom(f, chunks[3], app);
+
+    if app.debug {
+        draw_debug_overlay(f, app);
+    }
+}
+
+fn draw_debug_overlay(f: &mut Frame, app: &App) {
+    use ratatui::widgets::Clear;
+    let area = f.area();
+    let w = area.width.min(60);
+    let h = (app.debug_lines.len() as u16 + 4).min(area.height);
+    let rect = Rect {
+        x: area.width.saturating_sub(w + 1),
+        y: 4,
+        width: w,
+        height: h,
+    };
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!(
+            "mode={:?} dir={:?} word=\"{}\" cur={:?}",
+            app.mode, app.writing.direction, app.writing.current_word, app.writing.cursor
+        ),
+        Style::default().fg(Color::LightCyan),
+    )));
+    for l in &app.debug_lines {
+        lines.push(Line::from(Span::styled(
+            l.clone(),
+            Style::default().fg(Color::Gray),
+        )));
+    }
+    f.render_widget(Clear, rect);
+    let p = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" debug (PRFH_DEBUG) "),
+    );
+    f.render_widget(p, rect);
 }
 
 fn draw_banner(f: &mut Frame, area: Rect, app: &App) {
