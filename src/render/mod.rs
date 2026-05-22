@@ -163,14 +163,35 @@ fn draw_world(f: &mut Frame, area: Rect, app: &App) {
     let center = (w / 2, h / 2);
     let cursor = app.writing.cursor;
 
-    let mut grid: Vec<Vec<char>> = vec![vec![' '; w as usize]; h as usize];
+    // Per-cell glyph + optional style. None = empty space.
+    let mut grid: Vec<Vec<Option<(char, Style)>>> = vec![vec![None; w as usize]; h as usize];
+
+    let now = app.writing.tick;
+    // Fade math: brightness drops by FADE_PER_TICK per tick down to MIN_BRIGHTNESS.
+    const FADE_PER_TICK: u64 = 2;
+    const MAX_BRIGHTNESS: u64 = 200;
+    const MIN_BRIGHTNESS: u64 = 60;
 
     for tile in &app.writing.trail {
         let rx = tile.pos.0 - cursor.0 + center.0;
         let ry = tile.pos.1 - cursor.1 + center.1;
-        if rx >= 0 && ry >= 0 && rx < w && ry < h {
-            grid[ry as usize][rx as usize] = tile.ch;
+        if rx < 0 || ry < 0 || rx >= w || ry >= h {
+            continue;
         }
+        let style = if tile.glow > 0 {
+            Style::default()
+                .fg(Color::LightYellow)
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            let age = now.saturating_sub(tile.tick);
+            let b = MAX_BRIGHTNESS
+                .saturating_sub(age.saturating_mul(FADE_PER_TICK))
+                .max(MIN_BRIGHTNESS) as u8;
+            Style::default().fg(Color::Rgb(b, b, b))
+        };
+        // Later tiles overwrite earlier ones on the same cell (covers overwrite-on-stop).
+        grid[ry as usize][rx as usize] = Some((tile.ch, style));
     }
 
     // Direction-indicator glyph (sits at cursor center as an inverted cell)
@@ -185,19 +206,20 @@ fn draw_world(f: &mut Frame, area: Rect, app: &App) {
         .fg(Color::Black)
         .bg(Color::Yellow)
         .add_modifier(Modifier::BOLD);
-    let trail_style = Style::default().fg(Color::Gray);
+    let empty_style = Style::default();
 
     let lines: Vec<Line> = grid
         .iter()
         .enumerate()
         .map(|(y, row)| {
             let mut spans: Vec<Span> = Vec::with_capacity(row.len());
-            for (x, &ch) in row.iter().enumerate() {
+            for (x, cell) in row.iter().enumerate() {
                 if x as i32 == center.0 && y as i32 == center.1 {
                     spans.push(Span::styled(arrow_ch.to_string(), cursor_style));
+                } else if let Some((ch, style)) = cell {
+                    spans.push(Span::styled(ch.to_string(), *style));
                 } else {
-                    let s: String = ch.to_string();
-                    spans.push(Span::styled(s, trail_style));
+                    spans.push(Span::styled(" ".to_string(), empty_style));
                 }
             }
             Line::from(spans)

@@ -55,6 +55,7 @@ impl App {
                 self.trigger_banner = None;
             }
         }
+        self.writing.tick_visuals();
     }
 
     pub fn toggle_mode(&mut self) {

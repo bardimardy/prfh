@@ -51,10 +51,14 @@ const TRIGGER_WORDS: &[&str] = &["right", "down", "left", "back", "stop", "up"];
 /// Returns the matched trigger. Longest match wins (so "right" is checked
 /// before "up" even though "up" is shorter).
 pub fn match_trigger_suffix(word: &str) -> Option<Trigger> {
+    find_trigger_suffix(word).map(|(t, _)| t)
+}
+
+fn find_trigger_suffix(word: &str) -> Option<(Trigger, usize)> {
     let lower = word.to_ascii_lowercase();
     for tw in TRIGGER_WORDS {
         if lower.ends_with(tw) {
-            return match_trigger(tw);
+            return match_trigger(tw).map(|t| (t, tw.len()));
         }
     }
     None
@@ -74,7 +78,14 @@ pub fn buffer_ends_with_trigger(word: &str) -> bool {
 pub struct Tile {
     pub pos: (i32, i32),
     pub ch: char,
+    /// Engine tick when this tile was written. Used by render to compute age/fade.
+    pub tick: u64,
+    /// Remaining glow ticks. Non-zero = highlight as part of a recently-fired trigger.
+    pub glow: u32,
 }
+
+/// How many ticks a trigger-tile glows after firing.
+pub const GLOW_TICKS: u32 = 30;
 
 #[derive(Debug, Clone)]
 pub struct WritingEngine {
@@ -85,6 +96,8 @@ pub struct WritingEngine {
     pub combo: u32,
     pub doubt: u32,
     pub paused: bool,
+    /// Monotonically increasing tick counter, advanced on every char write.
+    pub tick: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +118,17 @@ impl WritingEngine {
             combo: 0,
             doubt: 0,
             paused: false,
+            tick: 0,
+        }
+    }
+
+    /// Render-time tick: decrement glow on every tile.
+    /// Called once per frame from the app loop, regardless of input.
+    pub fn tick_visuals(&mut self) {
+        for t in &mut self.trail {
+            if t.glow > 0 {
+                t.glow -= 1;
+            }
         }
     }
 
@@ -114,6 +138,8 @@ impl WritingEngine {
         let tile = Tile {
             pos: self.cursor,
             ch,
+            tick: self.tick,
+            glow: 0,
         };
         self.trail.push(tile.clone());
 
@@ -140,7 +166,12 @@ impl WritingEngine {
             self.current_word.push(ch);
             // Immediate trigger: fire as soon as the buffer's suffix matches
             // a trigger word. This means "helloup" also fires Up.
-            if let Some(trigger) = match_trigger_suffix(&self.current_word) {
+            if let Some((trigger, tw_len)) = find_trigger_suffix(&self.current_word) {
+                let n = self.trail.len();
+                let start = n.saturating_sub(tw_len);
+                for t in &mut self.trail[start..n] {
+                    t.glow = GLOW_TICKS;
+                }
                 match trigger {
                     Trigger::Direction(d) => {
                         self.direction = d;
@@ -158,6 +189,8 @@ impl WritingEngine {
                 self.current_word.clear();
             }
         }
+
+        self.tick = self.tick.saturating_add(1);
 
         if let Some(d) = turned_to {
             StepResult::WroteAndTurned(tile, d)
@@ -356,6 +389,46 @@ mod tests {
             e.on_char(ch);
         }
         assert_eq!(e.direction, Direction::Left);
+    }
+
+    #[test]
+    fn tick_advances_per_char_write() {
+        let mut e = WritingEngine::new((0, 0));
+        assert_eq!(e.tick, 0);
+        e.on_char('a');
+        e.on_char('b');
+        assert_eq!(e.tick, 2);
+        assert_eq!(e.trail[0].tick, 0);
+        assert_eq!(e.trail[1].tick, 1);
+    }
+
+    #[test]
+    fn trigger_marks_last_n_tiles_as_glowing() {
+        let mut e = WritingEngine::new((0, 0));
+        for ch in "hellup".chars() {
+            e.on_char(ch);
+        }
+        // 'u' and 'p' (last two tiles) should glow; the rest must not.
+        let n = e.trail.len();
+        assert_eq!(e.trail[n - 1].glow, GLOW_TICKS);
+        assert_eq!(e.trail[n - 2].glow, GLOW_TICKS);
+        assert_eq!(e.trail[n - 3].glow, 0);
+    }
+
+    #[test]
+    fn tick_visuals_decrements_glow() {
+        let mut e = WritingEngine::new((0, 0));
+        for ch in "up".chars() {
+            e.on_char(ch);
+        }
+        let g0 = e.trail.last().unwrap().glow;
+        e.tick_visuals();
+        assert_eq!(e.trail.last().unwrap().glow, g0 - 1);
+        // Saturates at 0.
+        for _ in 0..(GLOW_TICKS + 5) {
+            e.tick_visuals();
+        }
+        assert_eq!(e.trail.last().unwrap().glow, 0);
     }
 
     #[test]
