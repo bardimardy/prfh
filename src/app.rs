@@ -15,6 +15,9 @@ pub struct App {
     pub shell_history: Vec<String>,
     pub day: i64,
     pub last_event: String,
+    /// Sticky trigger banner — set when a trigger fires, decremented per tick.
+    pub trigger_banner: Option<String>,
+    pub trigger_banner_ticks: u32,
 }
 
 impl App {
@@ -27,10 +30,19 @@ impl App {
             shell_history: vec!["Loading career...".into()],
             day: 4380,
             last_event: String::from("type to write yourself a path"),
+            trigger_banner: None,
+            trigger_banner_ticks: 0,
         }
     }
 
-    pub fn tick(&mut self) {}
+    pub fn tick(&mut self) {
+        if self.trigger_banner_ticks > 0 {
+            self.trigger_banner_ticks -= 1;
+            if self.trigger_banner_ticks == 0 {
+                self.trigger_banner = None;
+            }
+        }
+    }
 
     pub fn toggle_mode(&mut self) {
         self.mode = match self.mode {
@@ -43,12 +55,20 @@ impl App {
         match self.mode {
             Mode::World => {
                 let result = self.writing.on_char(c);
-                self.last_event = match result {
+                self.last_event = match &result {
                     StepResult::Wrote(_) => format!("wrote '{}'", c),
                     StepResult::WroteAndTurned(_, d) => format!("turned: {:?}", d),
                     StepResult::WroteAndStopped(_) => "paused".into(),
                     StepResult::Erased => "erased".into(),
                 };
+                if let StepResult::WroteAndTurned(_, d) = result {
+                    self.trigger_banner = Some(format!("⟹ TURNED: {:?}", d));
+                    self.trigger_banner_ticks = 90; // ~1.5s at 60 FPS
+                }
+                if matches!(result, StepResult::WroteAndStopped(_)) {
+                    self.trigger_banner = Some("⟹ STOP — next char overwrites".into());
+                    self.trigger_banner_ticks = 90;
+                }
             }
             Mode::Shell => {
                 self.shell_buffer.push(c);

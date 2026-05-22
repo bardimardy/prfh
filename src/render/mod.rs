@@ -13,14 +13,30 @@ pub fn draw(f: &mut Frame, app: &App) {
         .direction(LayoutDirection::Vertical)
         .constraints([
             Constraint::Length(3),
+            Constraint::Length(1),
             Constraint::Min(5),
             Constraint::Length(5),
         ])
         .split(f.area());
 
     draw_hud(f, chunks[0], app);
-    draw_world(f, chunks[1], app);
-    draw_bottom(f, chunks[2], app);
+    draw_banner(f, chunks[1], app);
+    draw_world(f, chunks[2], app);
+    draw_bottom(f, chunks[3], app);
+}
+
+fn draw_banner(f: &mut Frame, area: Rect, app: &App) {
+    if let Some(msg) = &app.trigger_banner {
+        let p = Paragraph::new(Line::from(Span::styled(
+            msg.clone(),
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::LightYellow)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(p, area);
+    }
 }
 
 fn draw_hud(f: &mut Frame, area: Rect, app: &App) {

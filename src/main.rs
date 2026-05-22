@@ -7,11 +7,7 @@ use crossterm::{
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::{io, time::Duration};
 
-mod app;
-mod game;
-mod render;
-
-use app::App;
+use prfh::{app::App, render};
 
 fn main() -> Result<()> {
     enable_raw_mode()?;
@@ -41,7 +37,9 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result<()> {
 
         if event::poll(Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
+                // Accept Press and Repeat (some terminals send Repeat for held keys);
+                // ignore Release.
+                if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
                     match key.code {
                         KeyCode::Esc => app.should_quit = true,
                         KeyCode::Tab => app.toggle_mode(),
