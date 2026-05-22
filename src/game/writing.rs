@@ -133,6 +133,28 @@ impl WritingEngine {
         }
     }
 
+    /// Flush the current word as if a boundary was hit, without writing a char or stepping.
+    /// Returns Some(Direction) if the flush turned us, None otherwise.
+    pub fn flush_word(&mut self) -> Option<Direction> {
+        let trigger = match_trigger(&self.current_word);
+        self.current_word.clear();
+        match trigger {
+            Some(Trigger::Direction(d)) => {
+                self.direction = d;
+                Some(d)
+            }
+            Some(Trigger::Back) => {
+                self.direction = self.direction.opposite();
+                Some(self.direction)
+            }
+            Some(Trigger::Stop) => {
+                self.paused = true;
+                None
+            }
+            None => None,
+        }
+    }
+
     pub fn on_backspace(&mut self) -> StepResult {
         if let Some(last) = self.trail.pop() {
             self.cursor = last.pos;
@@ -217,6 +239,28 @@ mod tests {
         e.on_backspace();
         assert_eq!(e.cursor, (0, 0));
         assert_eq!(e.doubt, 2);
+    }
+
+    #[test]
+    fn flush_word_triggers_without_stepping() {
+        let mut e = WritingEngine::new((0, 0));
+        e.on_char('u');
+        e.on_char('p');
+        let start = e.cursor;
+        let turned = e.flush_word();
+        assert_eq!(turned, Some(Direction::Up));
+        assert_eq!(e.direction, Direction::Up);
+        assert_eq!(e.cursor, start, "flush_word should not move cursor");
+        assert!(e.current_word.is_empty());
+    }
+
+    #[test]
+    fn flush_word_with_no_match_returns_none() {
+        let mut e = WritingEngine::new((0, 0));
+        e.on_char('h');
+        e.on_char('i');
+        assert_eq!(e.flush_word(), None);
+        assert_eq!(e.direction, Direction::Right);
     }
 
     #[test]

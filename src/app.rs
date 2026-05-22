@@ -69,6 +69,13 @@ impl App {
     }
 
     pub fn on_enter(&mut self) {
+        if matches!(self.mode, Mode::World) {
+            match self.writing.flush_word() {
+                Some(d) => self.last_event = format!("⏎ turned: {:?}", d),
+                None => self.last_event = "⏎ no trigger word in buffer".into(),
+            }
+            return;
+        }
         if matches!(self.mode, Mode::Shell) {
             let line = std::mem::take(&mut self.shell_buffer);
             let cmd = parse(&line);

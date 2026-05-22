@@ -39,6 +39,22 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App) {
         Direction::Right => "→",
     };
 
+    let word = &app.writing.current_word;
+    let word_is_trigger = matches!(
+        word.to_ascii_lowercase().as_str(),
+        "up" | "down" | "left" | "right" | "back" | "stop"
+    );
+    let word_color = if word_is_trigger {
+        Color::LightGreen
+    } else {
+        Color::DarkGray
+    };
+    let word_display = if word.is_empty() {
+        "—".to_string()
+    } else {
+        word.clone()
+    };
+
     let hud = Paragraph::new(Line::from(vec![
         Span::styled(
             " PULL REQUEST FROM HELL ",
@@ -50,6 +66,8 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App) {
         Span::styled(format!("[{}]", mode_label), Style::default().fg(mode_color)),
         Span::raw("  "),
         Span::styled(format!("dir {} ", arrow), Style::default().fg(Color::Yellow)),
+        Span::raw("  word: "),
+        Span::styled(word_display, Style::default().fg(word_color).add_modifier(Modifier::BOLD)),
         Span::raw("  "),
         Span::styled(
             format!("combo x{}", app.writing.combo),
@@ -127,11 +145,13 @@ fn draw_bottom(f: &mut Frame, area: Rect, app: &App) {
                 Style::default().fg(Color::DarkGray),
             )),
             Line::from(vec![
+                Span::styled("[Enter]", Style::default().fg(Color::Cyan)),
+                Span::raw(" fire trigger  "),
                 Span::styled("[Tab]", Style::default().fg(Color::Cyan)),
                 Span::raw(" shell  "),
                 Span::styled("[Esc]", Style::default().fg(Color::Cyan)),
                 Span::raw(" quit  "),
-                Span::raw("triggers: "),
+                Span::raw("triggers (need space/punct/⏎ after): "),
                 Span::styled("up down left right back stop", Style::default().fg(Color::Yellow)),
             ]),
         ],
