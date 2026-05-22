@@ -1,5 +1,5 @@
 use crate::app::{App, Mode};
-use crate::game::writing::Direction;
+use crate::game::writing::{is_trigger_word, Direction};
 use ratatui::{
     layout::{Constraint, Direction as LayoutDirection, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -40,10 +40,7 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App) {
     };
 
     let word = &app.writing.current_word;
-    let word_is_trigger = matches!(
-        word.to_ascii_lowercase().as_str(),
-        "up" | "down" | "left" | "right" | "back" | "stop"
-    );
+    let word_is_trigger = is_trigger_word(word);
     let word_color = if word_is_trigger {
         Color::LightGreen
     } else {
@@ -122,15 +119,34 @@ fn draw_world(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    if center.0 >= 0 && center.1 >= 0 && center.0 < w && center.1 < h {
-        grid[center.1 as usize][center.0 as usize] = '_';
-    }
+    // Direction-indicator glyph (sits at cursor center as an inverted cell)
+    let arrow_ch = match app.writing.direction {
+        Direction::Up => '▲',
+        Direction::Down => '▼',
+        Direction::Left => '◀',
+        Direction::Right => '▶',
+    };
+
+    let cursor_style = Style::default()
+        .fg(Color::Black)
+        .bg(Color::Yellow)
+        .add_modifier(Modifier::BOLD);
+    let trail_style = Style::default().fg(Color::Gray);
 
     let lines: Vec<Line> = grid
-        .into_iter()
-        .map(|row| {
-            let s: String = row.into_iter().collect();
-            Line::from(s)
+        .iter()
+        .enumerate()
+        .map(|(y, row)| {
+            let mut spans: Vec<Span> = Vec::with_capacity(row.len());
+            for (x, &ch) in row.iter().enumerate() {
+                if x as i32 == center.0 && y as i32 == center.1 {
+                    spans.push(Span::styled(arrow_ch.to_string(), cursor_style));
+                } else {
+                    let s: String = ch.to_string();
+                    spans.push(Span::styled(s, trail_style));
+                }
+            }
+            Line::from(spans)
         })
         .collect();
     let world = Paragraph::new(lines);

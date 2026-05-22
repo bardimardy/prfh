@@ -33,7 +33,7 @@ pub enum Trigger {
     Stop,
 }
 
-fn match_trigger(word: &str) -> Option<Trigger> {
+pub fn match_trigger(word: &str) -> Option<Trigger> {
     match word.to_ascii_lowercase().as_str() {
         "up" => Some(Trigger::Direction(Direction::Up)),
         "down" => Some(Trigger::Direction(Direction::Down)),
@@ -43,6 +43,10 @@ fn match_trigger(word: &str) -> Option<Trigger> {
         "stop" => Some(Trigger::Stop),
         _ => None,
     }
+}
+
+pub fn is_trigger_word(word: &str) -> bool {
+    match_trigger(word).is_some()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,12 +121,16 @@ impl WritingEngine {
             self.current_word.push(ch);
         }
 
-        if !self.paused {
+        if self.paused && !stopped {
+            // Stop-trigger just fired: this char overwrites in place, then unpause.
+            self.paused = false;
+        } else if !self.paused {
             let (dx, dy) = self.direction.delta();
             self.cursor = (self.cursor.0 + dx, self.cursor.1 + dy);
-        } else if !stopped {
-            self.paused = false;
         }
+
+        // Combo: increment on successful write (non-erasure)
+        self.combo = self.combo.saturating_add(1);
 
         if let Some(d) = turned_to {
             StepResult::WroteAndTurned(tile, d)
@@ -131,6 +139,13 @@ impl WritingEngine {
         } else {
             StepResult::Wrote(tile)
         }
+    }
+
+    /// Newline: jump to next line, reset direction to Right.
+    pub fn on_newline(&mut self) {
+        self.cursor = (0, self.cursor.1 + 1);
+        self.direction = Direction::Right;
+        self.current_word.clear();
     }
 
     /// Flush the current word as if a boundary was hit, without writing a char or stepping.
@@ -161,7 +176,8 @@ impl WritingEngine {
             if !self.current_word.is_empty() {
                 self.current_word.pop();
             }
-            self.doubt += 1;
+            self.doubt = self.doubt.saturating_add(1);
+            self.combo = 0;
         }
         StepResult::Erased
     }
@@ -270,5 +286,79 @@ mod tests {
             e.on_char(ch);
         }
         assert_eq!(e.direction, Direction::Up);
+    }
+
+    #[test]
+    fn left_trigger_moves_cursor_left_after_space() {
+        let mut e = WritingEngine::new((0, 0));
+        for ch in "left ".chars() {
+            e.on_char(ch);
+        }
+        // 'l','e','f','t' = 4 right steps, then space: trigger Left + step left.
+        assert_eq!(e.direction, Direction::Left);
+        assert_eq!(e.cursor, (3, 0));
+        // Next char goes further left.
+        e.on_char('x');
+        assert_eq!(e.cursor, (2, 0));
+    }
+
+    #[test]
+    fn right_trigger_keeps_default_direction() {
+        let mut e = WritingEngine::new((0, 0));
+        for ch in "right ".chars() {
+            e.on_char(ch);
+        }
+        assert_eq!(e.direction, Direction::Right);
+        assert_eq!(e.cursor, (6, 0)); // 5 chars + 1 step right after trigger
+    }
+
+    #[test]
+    fn stop_pauses_then_overwrites_then_resumes() {
+        let mut e = WritingEngine::new((0, 0));
+        for ch in "stop ".chars() {
+            e.on_char(ch);
+        }
+        // 's','t','o','p' = 4 right steps, then space: stop trigger, paused=true, no step.
+        assert_eq!(e.cursor, (4, 0));
+        assert!(e.paused);
+        // Next char overwrites in place, unpauses, but doesn't step yet.
+        e.on_char('x');
+        assert_eq!(e.cursor, (4, 0));
+        assert!(!e.paused);
+        // Subsequent chars step normally.
+        e.on_char('y');
+        assert_eq!(e.cursor, (5, 0));
+    }
+
+    #[test]
+    fn combo_increments_per_write_and_resets_on_backspace() {
+        let mut e = WritingEngine::new((0, 0));
+        e.on_char('h');
+        e.on_char('i');
+        assert_eq!(e.combo, 2);
+        e.on_backspace();
+        assert_eq!(e.combo, 0);
+    }
+
+    #[test]
+    fn newline_resets_to_left_edge_and_right_direction() {
+        let mut e = WritingEngine::new((0, 0));
+        for ch in "up ".chars() {
+            e.on_char(ch);
+        }
+        assert_eq!(e.direction, Direction::Up);
+        let prev_y = e.cursor.1;
+        e.on_newline();
+        assert_eq!(e.cursor, (0, prev_y + 1));
+        assert_eq!(e.direction, Direction::Right);
+    }
+
+    #[test]
+    fn is_trigger_word_works() {
+        assert!(is_trigger_word("up"));
+        assert!(is_trigger_word("Down"));
+        assert!(is_trigger_word("STOP"));
+        assert!(!is_trigger_word("upgrade"));
+        assert!(!is_trigger_word(""));
     }
 }

@@ -72,7 +72,10 @@ impl App {
         if matches!(self.mode, Mode::World) {
             match self.writing.flush_word() {
                 Some(d) => self.last_event = format!("⏎ turned: {:?}", d),
-                None => self.last_event = "⏎ no trigger word in buffer".into(),
+                None => {
+                    self.writing.on_newline();
+                    self.last_event = "⏎ newline — direction reset to →".into();
+                }
             }
             return;
         }
