@@ -1,10 +1,9 @@
-use prfh::app::{App, Mode};
+use prfh::app::App;
 use prfh::game::writing::Direction;
 
 #[test]
 fn typing_up_in_world_mode_changes_direction_immediately() {
     let mut app = App::new();
-    assert_eq!(app.mode, Mode::World);
     assert_eq!(app.writing.direction, Direction::Right);
 
     app.on_char('u');
@@ -55,15 +54,22 @@ fn cursor_advances_up_after_up_trigger() {
 }
 
 #[test]
-fn shell_mode_does_not_trigger_directions() {
+fn space_does_nothing() {
     let mut app = App::new();
-    app.toggle_mode(); // -> Shell
-    assert_eq!(app.mode, Mode::Shell);
-    for c in "up".chars() {
-        app.on_char(c);
-    }
-    assert_eq!(app.writing.direction, Direction::Right, "shell mode should not affect writing direction");
-    assert_eq!(app.shell_buffer, "up");
+    let before_cursor = app.writing.cursor;
+    let before_trail = app.writing.trail.len();
+    app.on_char(' ');
+    assert_eq!(app.writing.cursor, before_cursor, "space must not move cursor");
+    assert_eq!(
+        app.writing.trail.len(),
+        before_trail,
+        "space must not write a tile"
+    );
+    assert_eq!(
+        app.writing.direction,
+        Direction::Right,
+        "space must not change direction"
+    );
 }
 
 #[test]

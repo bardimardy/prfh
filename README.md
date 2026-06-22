@@ -2,54 +2,67 @@
 
 > *„git blame yourself."*
 
-Ein sadistisches Terminal-Horror-Roguelike über verbitterte Softwareentwickler.
+**Du schreibst die Welt, durch die du läufst.** Jeder Tastendruck schreibt
+ein Zeichen UND macht einen Schritt. Bestimmte Wörter wie `up`, `down`,
+`left`, `right` ändern deine Laufrichtung — deine Spur bleibt sichtbar
+hinter dir liegen und verblasst langsam.
 
-**Du schreibst die Welt, durch die du läufst.** Jeder Tastendruck ist ein Zeichen UND ein Schritt. Worte wie `up`, `down`, `left`, `right` ändern deine Richtung. Deine Spur bleibt sichtbar — und merkst zu spät, dass du sie längst rückwärts schreibst.
-
-Du kämpfst gegen ASCII-Code-Reviewer-Bosse mit eskalierenden Nitpick-PR-Comments, sammelst Items, indem du sie durchtippst, und entkommst einer Karriere, die rückwärts läuft — ohne es zunächst zu merken.
-
-**Pitch:** *Typing of the Dead × Braid × Severance, gespielt in deinem Terminal.*
+Das hier ist das **Basis-Typing-Spiel**: die nackte Kern-Mechanik, auf der
+das eigentliche Spiel später aufbaut.
 
 ---
 
 ## Status
 
-🚧 **Pre-Alpha — Design-Phase.** Noch kein spielbarer Code.
+🧱 **Basis / Fundament.** Spielbar, aber bewusst minimal — nur die
+Schreib-und-Lauf-Mechanik. Alles Weitere wird darauf aufgesetzt.
 
-Aktuell entstehen die Design-Dokumente. Implementierung startet nach Sign-off auf v0.1 der Docs.
+## Die Mechanik
+
+Ein Terminal-Programm (Rust · Ratatui · Crossterm). Du bewegst dich über
+ein 2D-Spielfeld ausschließlich über die Tastatur:
+
+- **Tippen = schreiben + laufen.** Jedes getippte Zeichen wird als Glyph
+  auf das Feld geschrieben (sichtbare Spur) und schiebt den Cursor einen
+  Schritt in die aktuelle Richtung.
+- **Trigger-Wörter lenken den Cursor.** Sie feuern **sofort**, sobald das
+  Getippte auf den Trigger endet — kein Leerzeichen, kein Enter nötig
+  (z. B. `...up` dreht augenblicklich nach oben):
+
+  | Wort | Wirkung |
+  |---|---|
+  | `up` / `down` / `left` / `right` | setzt die Laufrichtung |
+  | `back` | kehrt die aktuelle Richtung um |
+  | `stop` | pausiert — das nächste Zeichen überschreibt an Ort und Stelle |
+
+  Hinweis: Weil Trigger auf dem **Suffix** feuern, dreht z. B. auch
+  `upgrade` nach oben (das `up` darin reicht).
+- **Spur & Glow.** Die Spur verblasst mit der Zeit. Ein gerade gefeuerter
+  Trigger leuchtet kurz auf.
+- **Leertaste ist deaktiviert.** Sie tut bewusst nichts — kein Zeichen,
+  kein Schritt.
+
+## Steuerung
+
+| Taste | Aktion |
+|---|---|
+| beliebige Zeichen | schreiben & laufen / Trigger feuern |
+| `Backspace` | einen Schritt zurücklaufen (Spur löschen) |
+| `Esc` | beenden |
+
+Optional: Umgebungsvariable `PRFH_DEBUG=1` setzen, um ein Debug-Overlay
+(Modus, Richtung, aktuelles Wort, Cursor) einzublenden.
+
+## Build & Run
+
+```sh
+cargo run     # Spiel starten
+cargo test    # Tests ausführen
+```
 
 ## Docs
 
-- [01 — Game Design Document](docs/01-game-design-doc.md)
-- [02 — Twist-Storyboard](docs/02-twist-storyboard.md)
-- [03 — Tech-Architektur](docs/03-tech-architecture.md)
-- [04 — Review-Addendum & Resolutions](docs/04-review-addendum.md)
-- [05 — Write-to-Move (Kern-Mechanik)](docs/05-write-to-move.md) ⭐
-
-## Core Pillars
-
-1. **Tippen ist Überleben.** Jede Bewegung, jeder Angriff ist ein Keystroke.
-2. **Die Firma ist der Endboss.** PRs, Reviews, Meetings, Sprint-Pressure.
-3. **Die Zeit ist nicht auf deiner Seite. Sie läuft falsch.**
-4. **Schwarzer Humor über echten Schmerz.**
-
-## Stack
-
-Rust · Ratatui · Crossterm · bracket-lib · rodio (optional)
-
-## Roadmap
-
-| Release | Inhalt |
-|---|---|
-| MVP | Solo, 1 Level, 1 Boss, Basic-Typing-Combat |
-| v0.2a | 3 Levels, 6 Bosse, Items, Loadouts |
-| v0.2b | RNG-Speed + Twist-Hinweise Phase 1–3 |
-| v0.3 | Local Coop (Pair Programming), Twist-Phase 4–5 |
-| v1.0 | Polish, Sound, Accessibility, DE-Lokalisierung, Release |
-
-## License
-
-TBD — voraussichtlich MPL-2.0 oder AGPL-3.0 für Code, CC-BY-NC für Assets.
+- [docs/](docs/) — Design-Dokumente für das größere Spiel, das auf dieser Basis aufbauen soll.
 
 ---
 
