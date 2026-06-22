@@ -1,0 +1,29 @@
+name: "🎮 Mechanic / Feature"
+description: "Eine Spielmechanik oder ein Feature, das gebaut werden soll."
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: Ziel
+      description: Was soll diese Mechanik/dieses Feature tun? Aus Spielersicht.
+      placeholder: "Als Spieler kann ich ..."
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Verhalten / Akzeptanzkriterien
+      description: Konkrete, prüfbare Kriterien. Eins pro Zeile.
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: notes
+    attributes:
+      label: Technische Notizen (optional)
+      description: Betroffene Module, Abhängigkeiten zu anderen Issues, offene Fragen.
+    validations:
+      required: false

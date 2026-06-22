@@ -1,5 +1,4 @@
 /target
-/Cargo.lock
 **/*.rs.bk
 .DS_Store
 .idea/
@@ -7,3 +6,6 @@
 *.swp
 *.log
 /save/
+
+# Persönliche Claude-Einstellungen (nicht teilen)
+.claude/settings.local.json
