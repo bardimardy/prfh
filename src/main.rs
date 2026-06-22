@@ -160,14 +160,24 @@ fn run_client<B: ratatui::backend::Backend>(
     while !app.should_quit {
         terminal.draw(|f| render::draw(f, &app))?;
 
+        let self_is_dead = app
+            .world_view()
+            .players
+            .iter()
+            .find(|p| p.is_self)
+            .map(|p| p.is_dead)
+            .unwrap_or(false);
+
         if event::poll(Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
                     match key.code {
                         KeyCode::Esc => app.should_quit = true,
                         KeyCode::Char(' ') => {}
-                        KeyCode::Char(c) => handle.send_input(InputEvent::Char(c)),
-                        KeyCode::Backspace => handle.send_input(InputEvent::Backspace),
+                        KeyCode::Char(c) if !self_is_dead => handle.send_input(InputEvent::Char(c)),
+                        KeyCode::Backspace if !self_is_dead => {
+                            handle.send_input(InputEvent::Backspace)
+                        }
                         _ => {}
                     }
                 }
@@ -290,7 +300,13 @@ fn run_host<B: ratatui::backend::Backend>(
             }
         }
 
-        app.tick();
+        // (c) tick visuals + broadcast any respawn events
+        if let Mode::Host(h) = &mut app.mode {
+            for msg in h.tick_visuals() {
+                broadcast(&mut streams, None, &msg);
+            }
+        }
+        app.tick(); // banner countdown (host tick_visuals already called above)
     }
     Ok(())
 }

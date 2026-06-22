@@ -47,6 +47,13 @@ pub enum ServerMsg {
     Reject {
         reason: String,
     },
+    Died {
+        id: PlayerId,
+    },
+    Respawned {
+        id: PlayerId,
+        pos: (i32, i32),
+    },
 }
 
 /// Serialize a message to a single compact RON line terminated by '\n'.

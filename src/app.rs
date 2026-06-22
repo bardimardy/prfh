@@ -67,6 +67,7 @@ impl App {
                     cursor: e.cursor,
                     direction: e.direction,
                     is_self: true,
+                    is_dead: false,
                 }],
             },
             Mode::Host(h) => h.world_view(),
@@ -92,7 +93,9 @@ impl App {
         }
         match &mut self.mode {
             Mode::Single(e) => e.tick_visuals(),
-            Mode::Host(h) => h.tick_visuals(),
+            // Host tick_visuals is driven by run_host (which also broadcasts
+            // the returned Respawned messages), so we skip it here.
+            Mode::Host(_) => {}
             Mode::Client(w) => w.tick_visuals(),
         }
     }

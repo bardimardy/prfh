@@ -26,6 +26,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_world(f, chunks[2], &world);
     draw_bottom(f, chunks[3], app, &world);
 
+    let self_dead = world.players.iter().any(|p| p.is_self && p.is_dead);
+    if self_dead {
+        draw_death_overlay(f, app);
+    }
+
     if app.debug {
         draw_debug_overlay(f, app);
     }
@@ -79,6 +84,34 @@ fn draw_banner(f: &mut Frame, area: Rect, app: &App) {
         .alignment(ratatui::layout::Alignment::Center);
         f.render_widget(p, area);
     }
+}
+
+fn draw_death_overlay(f: &mut Frame, _app: &App) {
+    use ratatui::widgets::Clear;
+    let area = f.area();
+    let w = area.width.min(40);
+    let h = 3u16;
+    let rect = Rect {
+        x: area.width.saturating_sub(w) / 2,
+        y: area.height / 2 - 1,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    let p = Paragraph::new(Line::from(Span::styled(
+        " ✝  Du bist tot — Respawn läuft… ",
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Red)
+            .add_modifier(Modifier::BOLD),
+    )))
+    .alignment(ratatui::layout::Alignment::Center)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White).bg(Color::Red)),
+    );
+    f.render_widget(p, rect);
 }
 
 fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {

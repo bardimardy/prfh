@@ -56,6 +56,7 @@ pub struct PlayerSnapshot {
     pub trail: Vec<Tile>,
     pub cursor: (i32, i32),
     pub direction: Direction,
+    pub is_dead: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -67,6 +68,7 @@ pub struct PlayerView {
     pub cursor: (i32, i32),
     pub direction: Direction,
     pub is_self: bool,
+    pub is_dead: bool,
 }
 
 impl PlayerView {
@@ -120,6 +122,7 @@ impl WorldView {
                     .into_iter()
                     .map(|s| PlayerView {
                         is_self: s.id == your_id,
+                        is_dead: s.is_dead,
                         id: s.id,
                         color: s.color,
                         name: s.name,
@@ -139,6 +142,7 @@ impl WorldView {
                         cursor: (0, 0),
                         direction: Direction::Right,
                         is_self: id == self.self_id,
+                        is_dead: false,
                     });
                 }
             }
@@ -170,6 +174,19 @@ impl WorldView {
                 }
             }
             ServerMsg::Reject { .. } => {}
+            ServerMsg::Died { id } => {
+                if let Some(p) = self.player_mut(id) {
+                    p.trail.clear();
+                    p.is_dead = true;
+                }
+            }
+            ServerMsg::Respawned { id, pos } => {
+                if let Some(p) = self.player_mut(id) {
+                    p.trail.clear();
+                    p.cursor = pos;
+                    p.is_dead = false;
+                }
+            }
         }
     }
 }
@@ -188,6 +205,7 @@ mod tests {
             cursor: (0, 0),
             direction: Direction::Right,
             is_self: true,
+            is_dead: false,
         });
         w
     }
@@ -240,6 +258,7 @@ mod tests {
                 trail: vec![],
                 cursor: (1, 1),
                 direction: Direction::Up,
+                is_dead: false,
             }],
         });
         assert_eq!(w.self_id, 2);

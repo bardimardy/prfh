@@ -1,15 +1,20 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 
+use rand::Rng;
+
 use crate::game::world::{
     PlayerColor, PlayerId, PlayerSnapshot, PlayerView, WorldView, MAX_PLAYERS, PALETTE,
 };
 use crate::game::writing::{StepResult, WritingEngine, GLOW_TICKS};
 use crate::net::protocol::{decode_line, encode_line, ClientMsg, InputEvent, ServerMsg};
+
+/// Ticks at ~60 fps until a dead player respawns.
+const RESPAWN_TICKS: u32 = 180;
 
 pub enum HostEvent {
     Hello {
@@ -102,6 +107,7 @@ struct Player {
     engine: WritingEngine,
     color_idx: usize,
     name: String,
+    spawn: (i32, i32),
 }
 
 pub struct JoinOutcome {
@@ -114,6 +120,8 @@ pub struct JoinOutcome {
 pub struct HostState {
     players: BTreeMap<PlayerId, Player>,
     join_seq: u32,
+    /// countdown ticks until respawn; absent = alive
+    dead_ticks: HashMap<PlayerId, u32>,
 }
 
 impl HostState {
@@ -121,6 +129,7 @@ impl HostState {
         let mut s = Self {
             players: BTreeMap::new(),
             join_seq: 0,
+            dead_ticks: HashMap::new(),
         };
         // Host always exists as id 0, color index 0, spawn (0,0).
         s.insert_player(HOST_ID, 0, host_name);
@@ -142,6 +151,7 @@ impl HostState {
                 engine: WritingEngine::new(spawn),
                 color_idx,
                 name,
+                spawn,
             },
         );
     }
@@ -183,6 +193,10 @@ impl HostState {
     }
 
     pub fn apply_input(&mut self, id: PlayerId, ev: InputEvent) -> Option<ServerMsg> {
+        // Dead players cannot act.
+        if self.dead_ticks.contains_key(&id) {
+            return None;
+        }
         let player = self.players.get_mut(&id)?;
         match ev {
             InputEvent::Char(c) => {
@@ -200,13 +214,25 @@ impl HostState {
                         as u8,
                     _ => 0,
                 };
-                Some(ServerMsg::Wrote {
+                let wrote_pos = tile.pos;
+                let wrote_msg = ServerMsg::Wrote {
                     id,
                     tile,
                     cursor: player.engine.cursor,
                     direction: player.engine.direction,
                     glow_len,
-                })
+                };
+                // Check collision: did this player just write on another player's tile?
+                let hit = self.players.iter().any(|(other_id, other)| {
+                    *other_id != id && other.engine.trail.iter().any(|t| t.pos == wrote_pos)
+                });
+                if hit {
+                    self.players.get_mut(&id).unwrap().engine.trail.clear();
+                    self.dead_ticks.insert(id, RESPAWN_TICKS);
+                    Some(ServerMsg::Died { id })
+                } else {
+                    Some(wrote_msg)
+                }
             }
             InputEvent::Backspace => {
                 player.engine.on_backspace();
@@ -218,10 +244,73 @@ impl HostState {
         }
     }
 
-    pub fn tick_visuals(&mut self) {
+    /// Advance visual state by one tick; returns any messages to broadcast
+    /// (currently only `Respawned` events).
+    pub fn tick_visuals(&mut self) -> Vec<ServerMsg> {
         for p in self.players.values_mut() {
             p.engine.tick_visuals();
         }
+        let mut msgs = Vec::new();
+        let expired: Vec<PlayerId> = self
+            .dead_ticks
+            .iter_mut()
+            .filter_map(|(id, ticks)| {
+                *ticks = ticks.saturating_sub(1);
+                if *ticks == 0 {
+                    Some(*id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for id in expired {
+            self.dead_ticks.remove(&id);
+            let pos = self.respawn_pos(id);
+            if let Some(p) = self.players.get_mut(&id) {
+                p.engine = WritingEngine::new(pos);
+            }
+            msgs.push(ServerMsg::Respawned { id, pos });
+        }
+        msgs
+    }
+
+    /// Pick a random free cell near a random living player.
+    /// Falls back to the player's original spawn if no candidate is found.
+    fn respawn_pos(&self, id: PlayerId) -> (i32, i32) {
+        let living: Vec<&Player> = self
+            .players
+            .iter()
+            .filter(|(pid, _)| **pid != id && !self.dead_ticks.contains_key(*pid))
+            .map(|(_, p)| p)
+            .collect();
+
+        let fallback = self.players.get(&id).map(|p| p.spawn).unwrap_or((0, 0));
+
+        if living.is_empty() {
+            return fallback;
+        }
+
+        let mut rng = rand::thread_rng();
+        let target = living[rng.gen_range(0..living.len())];
+
+        // Collect all occupied positions for a quick lookup.
+        let occupied: std::collections::HashSet<(i32, i32)> = self
+            .players
+            .values()
+            .flat_map(|p| p.engine.trail.iter().map(|t| t.pos))
+            .collect();
+
+        for _ in 0..50 {
+            let angle = rng.gen::<f64>() * std::f64::consts::TAU;
+            let dist = rng.gen_range(5.0_f64..=15.0);
+            let dx = (angle.cos() * dist).round() as i32;
+            let dy = (angle.sin() * dist).round() as i32;
+            let candidate = (target.engine.cursor.0 + dx, target.engine.cursor.1 + dy);
+            if !occupied.contains(&candidate) {
+                return candidate;
+            }
+        }
+        fallback
     }
 
     pub fn snapshot(&self) -> Vec<PlayerSnapshot> {
@@ -234,6 +323,7 @@ impl HostState {
                 trail: p.engine.trail.clone(),
                 cursor: p.engine.cursor,
                 direction: p.engine.direction,
+                is_dead: self.dead_ticks.contains_key(id),
             })
             .collect()
     }
@@ -250,6 +340,7 @@ impl HostState {
                 cursor: p.engine.cursor,
                 direction: p.engine.direction,
                 is_self: *id == HOST_ID,
+                is_dead: self.dead_ticks.contains_key(id),
             })
             .collect();
         WorldView {
