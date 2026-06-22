@@ -220,6 +220,7 @@ mod tests {
                 ch: 'a',
                 tick: i as u64,
                 glow: 0,
+                brightness: crate::game::writing::TILE_MAX_BRIGHTNESS,
             });
         }
         assert_eq!(p.trail.len(), TRAIL_CAP);
@@ -235,6 +236,7 @@ mod tests {
             ch: 'x',
             tick: 0,
             glow: GLOW_TICKS,
+            brightness: crate::game::writing::TILE_MAX_BRIGHTNESS,
         });
         w.tick_visuals();
         assert_eq!(w.players[0].trail[0].glow, GLOW_TICKS - 1);
@@ -277,6 +279,7 @@ mod tests {
                 ch: 'u',
                 tick: 0,
                 glow: 0,
+                brightness: crate::game::writing::TILE_MAX_BRIGHTNESS,
             },
             cursor: (1, 0),
             direction: Direction::Right,
@@ -289,6 +292,7 @@ mod tests {
                 ch: 'p',
                 tick: 1,
                 glow: 0,
+                brightness: crate::game::writing::TILE_MAX_BRIGHTNESS,
             },
             cursor: (2, 0),
             direction: Direction::Up,
@@ -311,6 +315,7 @@ mod tests {
             ch: 'a',
             tick: 0,
             glow: 0,
+            brightness: crate::game::writing::TILE_MAX_BRIGHTNESS,
         });
         w.apply(ServerMsg::Erased {
             id: 1,

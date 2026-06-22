@@ -101,6 +101,7 @@ mod tests {
                 ch: 'q',
                 tick: 9,
                 glow: 0,
+                brightness: crate::game::writing::TILE_MAX_BRIGHTNESS,
             },
             cursor: (5, 1),
             direction: Direction::Down,

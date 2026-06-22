@@ -198,18 +198,6 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
 
     let mut grid: Vec<Vec<Option<(char, Style)>>> = vec![vec![None; w as usize]; h as usize];
 
-    // newest tick across all trails, for fade reference
-    let now = world
-        .players
-        .iter()
-        .flat_map(|p| p.trail.iter().map(|t| t.tick))
-        .max()
-        .unwrap_or(0);
-
-    const FADE_PER_TICK: u64 = 2;
-    const MAX_BRIGHTNESS: u64 = 200;
-    const MIN_BRIGHTNESS: u64 = 60;
-
     // Collect all tiles across all players and sort by tick so the most
     // recently written tile always wins at any given cell, regardless of
     // which player wrote it (fixes host-vs-client render order).
@@ -230,10 +218,8 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
         if rx < 0 || ry < 0 || rx >= w || ry >= h {
             continue;
         }
-        let age = now.saturating_sub(tile.tick);
-        let b = MAX_BRIGHTNESS
-            .saturating_sub(age.saturating_mul(FADE_PER_TICK))
-            .max(MIN_BRIGHTNESS);
+        let b = tile.brightness as u64;
+        let max = crate::game::writing::TILE_MAX_BRIGHTNESS as u64;
         let style = if tile.glow > 0 {
             Style::default()
                 .fg(Color::LightYellow)
@@ -242,7 +228,7 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
         } else if *is_self {
             Style::default().fg(Color::Rgb(b as u8, b as u8, b as u8))
         } else {
-            let scale = |c: u8| ((c as u64 * b) / MAX_BRIGHTNESS).min(255) as u8;
+            let scale = |c: u8| ((c as u64 * b) / max).min(255) as u8;
             Style::default().fg(Color::Rgb(scale(color.r), scale(color.g), scale(color.b)))
         };
         grid[ry as usize][rx as usize] = Some((tile.ch, style));
