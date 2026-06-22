@@ -20,6 +20,12 @@ pub struct App {
 }
 
 impl App {
+    pub fn new_with_mode(mode: Mode) -> Self {
+        let mut a = App::new_single();
+        a.mode = mode;
+        a
+    }
+
     pub fn new_single() -> Self {
         Self {
             should_quit: false,
