@@ -183,29 +183,32 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
     let mut all_tiles: Vec<(
         &crate::game::writing::Tile,
         &crate::game::world::PlayerColor,
+        bool, // is_self
     )> = world
         .players
         .iter()
-        .flat_map(|p| p.trail.iter().map(move |t| (t, &p.color)))
+        .flat_map(|p| p.trail.iter().map(move |t| (t, &p.color, p.is_self)))
         .collect();
-    all_tiles.sort_unstable_by_key(|(t, _)| t.tick);
+    all_tiles.sort_unstable_by_key(|(t, _, _)| t.tick);
 
-    for (tile, color) in &all_tiles {
+    for (tile, color, is_self) in &all_tiles {
         let rx = tile.pos.0 - cursor.0 + center.0;
         let ry = tile.pos.1 - cursor.1 + center.1;
         if rx < 0 || ry < 0 || rx >= w || ry >= h {
             continue;
         }
+        let age = now.saturating_sub(tile.tick);
+        let b = MAX_BRIGHTNESS
+            .saturating_sub(age.saturating_mul(FADE_PER_TICK))
+            .max(MIN_BRIGHTNESS);
         let style = if tile.glow > 0 {
             Style::default()
                 .fg(Color::LightYellow)
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD)
+        } else if *is_self {
+            Style::default().fg(Color::Rgb(b as u8, b as u8, b as u8))
         } else {
-            let age = now.saturating_sub(tile.tick);
-            let b = MAX_BRIGHTNESS
-                .saturating_sub(age.saturating_mul(FADE_PER_TICK))
-                .max(MIN_BRIGHTNESS);
             let scale = |c: u8| ((c as u64 * b) / MAX_BRIGHTNESS).min(255) as u8;
             Style::default().fg(Color::Rgb(scale(color.r), scale(color.g), scale(color.b)))
         };
