@@ -37,7 +37,11 @@ fn safe_expand(dir: ExpandDirection, style: Style, ms: u32, curve: Interpolation
 /// Verwendet nur verifizierte Bausteine (`parallel`, `hsl_shift`, `slide_in`).
 pub fn pickup() -> Effect {
     fx::parallel(&[
-        fx::hsl_shift(Some([90.0, 25.0, 15.0]), None, (600, Interpolation::SineOut)),
+        fx::hsl_shift(
+            Some([90.0, 25.0, 15.0]),
+            None,
+            (600, Interpolation::SineOut),
+        ),
         fx::slide_in(Motion::UpToDown, 6, 0, Color::Black, 600),
     ])
 }
@@ -53,7 +57,11 @@ pub fn activation() -> Effect {
             500,
             Interpolation::CircOut,
         ),
-        fx::hsl_shift(Some([200.0, 20.0, 10.0]), None, (400, Interpolation::QuadOut)),
+        fx::hsl_shift(
+            Some([200.0, 20.0, 10.0]),
+            None,
+            (400, Interpolation::QuadOut),
+        ),
     ])
 }
 

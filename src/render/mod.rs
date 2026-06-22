@@ -2,12 +2,29 @@ use crate::app::App;
 use crate::game::writing::Direction;
 use crate::theme;
 use ratatui::{
+    buffer::Buffer,
     layout::{Constraint, Direction as LayoutDirection, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use std::time::Duration;
+use tachyonfx::EffectManager;
+
+/// Post-Render-Hook: treibt einen `EffectManager` gegen den Frame-Buffer.
+/// Generisch über den Key-Typ `K`, damit der spätere Live-Call (C, #31) die
+/// Key-Strategie frei wählt — diese Phase legt KEINE `App`-Felder an. In `draw`
+/// wird das später als `process_effects(mgr, elapsed, f.buffer_mut(), area)`
+/// aufgerufen; hier nur die wiederverwendbare, testbare Funktion.
+pub fn process_effects<K: Clone + std::fmt::Debug + Ord>(
+    manager: &mut EffectManager<K>,
+    elapsed: Duration,
+    buf: &mut Buffer,
+    area: Rect,
+) {
+    manager.process_effects(elapsed.into(), buf, area);
+}
 
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -94,13 +111,17 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App) {
         Span::styled("dir ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(
             format!("{arrow} "),
-            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
         Span::styled("combo ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(
             format!("x{}", app.writing.combo),
-            Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::TEXT)
+                .add_modifier(Modifier::BOLD),
         ),
     ]))
     .block(Block::default().borders(Borders::ALL));
@@ -255,5 +276,22 @@ mod tests {
             "verbose Trigger-Hilfe noch da"
         );
         assert!(out.contains("Esc"), "Quit-Hinweis fehlt");
+    }
+
+    #[test]
+    fn process_effects_hook_drives_manager_without_panic() {
+        use crate::effects;
+        use ratatui::buffer::Buffer;
+        use std::time::Duration;
+        use tachyonfx::EffectManager;
+
+        let mut mgr: EffectManager<()> = EffectManager::default();
+        mgr.add_effect(effects::pickup());
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 24, 12));
+        let area = buf.area;
+        for _ in 0..40 {
+            process_effects(&mut mgr, Duration::from_millis(50), &mut buf, area);
+        }
     }
 }
