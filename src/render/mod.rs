@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::game::world::WorldView;
 use crate::game::writing::Direction;
 use crate::theme;
 use ratatui::{
@@ -37,10 +38,16 @@ pub fn draw(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
-    draw_hud(f, chunks[0], app);
+    let world = app.world_view();
+    draw_hud(f, chunks[0], app, &world);
     draw_banner(f, chunks[1], app);
-    draw_world(f, chunks[2], app);
-    draw_bottom(f, chunks[3], app);
+    draw_world(f, chunks[2], &world);
+    draw_bottom(f, chunks[3], app, &world);
+
+    let self_dead = world.players.iter().any(|p| p.is_self && p.is_dead);
+    if self_dead {
+        draw_death_overlay(f, app);
+    }
 
     if app.debug {
         draw_debug_overlay(f, app);
@@ -59,13 +66,15 @@ fn draw_debug_overlay(f: &mut Frame, app: &App) {
         height: h,
     };
     let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(Span::styled(
-        format!(
-            "dir={:?} word=\"{}\" cur={:?}",
-            app.writing.direction, app.writing.current_word, app.writing.cursor
-        ),
-        Style::default().fg(Color::LightCyan),
-    )));
+    if let Some(e) = app.local_engine() {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "dir={:?} word=\"{}\" cur={:?}",
+                e.direction, e.current_word, e.cursor
+            ),
+            Style::default().fg(Color::LightCyan),
+        )));
+    }
     lines.push(Line::from(Span::styled(
         format!("last: {}", app.last_event),
         Style::default().fg(theme::TEXT_DIM),
@@ -99,13 +108,49 @@ fn draw_banner(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn draw_hud(f: &mut Frame, area: Rect, app: &App) {
-    let arrow = match app.writing.direction {
+fn draw_death_overlay(f: &mut Frame, _app: &App) {
+    use ratatui::widgets::Clear;
+    let area = f.area();
+    let w = area.width.min(40);
+    let h = 3u16;
+    let rect = Rect {
+        x: area.width.saturating_sub(w) / 2,
+        y: area.height / 2 - 1,
+        width: w,
+        height: h,
+    };
+    f.render_widget(Clear, rect);
+    let p = Paragraph::new(Line::from(Span::styled(
+        " ✝  Du bist tot — Respawn läuft… ",
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Red)
+            .add_modifier(Modifier::BOLD),
+    )))
+    .alignment(ratatui::layout::Alignment::Center)
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(Color::White).bg(Color::Red)),
+    );
+    f.render_widget(p, rect);
+}
+
+fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
+    let dir = world
+        .players
+        .iter()
+        .find(|p| p.is_self)
+        .map(|p| p.direction)
+        .unwrap_or(Direction::Right);
+    let arrow = match dir {
         Direction::Up => "↑",
         Direction::Down => "↓",
         Direction::Left => "←",
         Direction::Right => "→",
     };
+
+    let combo = app.local_engine().map(|e| e.combo).unwrap_or(0);
 
     let hud = Paragraph::new(Line::from(vec![
         Span::styled("dir ", Style::default().fg(theme::TEXT_DIM)),
@@ -118,7 +163,7 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App) {
         Span::raw("  "),
         Span::styled("combo ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(
-            format!("x{}", app.writing.combo),
+            format!("x{}", combo),
             Style::default()
                 .fg(theme::TEXT)
                 .add_modifier(Modifier::BOLD),
@@ -128,90 +173,127 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(hud, area);
 }
 
-fn draw_world(f: &mut Frame, area: Rect, app: &App) {
+fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" /work/repo/career.md ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Render the writing trail in world-space, centered on cursor
     let w = inner.width as i32;
     let h = inner.height as i32;
     let center = (w / 2, h / 2);
-    let cursor = app.writing.cursor;
 
-    // Per-cell glyph + optional style. None = empty space.
+    let self_player = world.players.iter().find(|p| p.is_self);
+    let cursor = self_player.map(|p| p.cursor).unwrap_or((0, 0));
+
     let mut grid: Vec<Vec<Option<(char, Style)>>> = vec![vec![None; w as usize]; h as usize];
 
-    let now = app.writing.tick;
-    // Fade math: brightness drops by FADE_PER_TICK per tick down to MIN_BRIGHTNESS.
-    const FADE_PER_TICK: u64 = 2;
-    const MAX_BRIGHTNESS: u64 = 200;
-    const MIN_BRIGHTNESS: u64 = 60;
+    // Collect all tiles across all players and sort by tick so the most
+    // recently written tile always wins at any given cell, regardless of
+    // which player wrote it (fixes host-vs-client render order).
+    let mut all_tiles: Vec<(
+        &crate::game::writing::Tile,
+        &crate::game::world::PlayerColor,
+        bool, // is_self
+    )> = world
+        .players
+        .iter()
+        .flat_map(|p| p.trail.iter().map(move |t| (t, &p.color, p.is_self)))
+        .collect();
+    all_tiles.sort_unstable_by_key(|(t, _, _)| t.tick);
 
-    for tile in &app.writing.trail {
+    for (tile, color, is_self) in &all_tiles {
         let rx = tile.pos.0 - cursor.0 + center.0;
         let ry = tile.pos.1 - cursor.1 + center.1;
         if rx < 0 || ry < 0 || rx >= w || ry >= h {
             continue;
         }
+        let b = tile.brightness as u64;
+        let max = crate::game::writing::TILE_MAX_BRIGHTNESS as u64;
         let style = if tile.glow > 0 {
             Style::default()
                 .fg(Color::LightYellow)
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD)
+        } else if *is_self {
+            Style::default().fg(Color::Rgb(b as u8, b as u8, b as u8))
         } else {
-            let age = now.saturating_sub(tile.tick);
-            let b = MAX_BRIGHTNESS
-                .saturating_sub(age.saturating_mul(FADE_PER_TICK))
-                .max(MIN_BRIGHTNESS) as u8;
-            Style::default().fg(Color::Rgb(b, b, b))
+            let scale = |c: u8| ((c as u64 * b) / max).min(255) as u8;
+            Style::default().fg(Color::Rgb(scale(color.r), scale(color.g), scale(color.b)))
         };
-        // Later tiles overwrite earlier ones on the same cell (covers overwrite-on-stop).
         grid[ry as usize][rx as usize] = Some((tile.ch, style));
     }
 
-    // Direction-indicator glyph (sits at cursor center as an inverted cell)
-    let arrow_ch = match app.writing.direction {
-        Direction::Up => '▲',
-        Direction::Down => '▼',
-        Direction::Left => '◀',
-        Direction::Right => '▶',
-    };
+    // Cursor marker: only rendered for the local player.
+    for player in &world.players {
+        if !player.is_self {
+            continue;
+        }
+        let rx = player.cursor.0 - cursor.0 + center.0;
+        let ry = player.cursor.1 - cursor.1 + center.1;
+        if rx < 0 || ry < 0 || rx >= w || ry >= h {
+            continue;
+        }
+        let arrow_ch = match player.direction {
+            Direction::Up => '▲',
+            Direction::Down => '▼',
+            Direction::Left => '◀',
+            Direction::Right => '▶',
+        };
+        let style = if player.is_self {
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(Color::Rgb(player.color.r, player.color.g, player.color.b))
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD)
+        };
+        grid[ry as usize][rx as usize] = Some((arrow_ch, style));
+    }
 
-    let cursor_style = Style::default()
-        .fg(Color::Black)
-        .bg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
     let empty_style = Style::default();
-
     let lines: Vec<Line> = grid
         .iter()
-        .enumerate()
-        .map(|(y, row)| {
+        .map(|row| {
             let mut spans: Vec<Span> = Vec::with_capacity(row.len());
-            for (x, cell) in row.iter().enumerate() {
-                if x as i32 == center.0 && y as i32 == center.1 {
-                    spans.push(Span::styled(arrow_ch.to_string(), cursor_style));
-                } else if let Some((ch, style)) = cell {
-                    spans.push(Span::styled(ch.to_string(), *style));
-                } else {
-                    spans.push(Span::styled(" ".to_string(), empty_style));
+            for cell in row.iter() {
+                match cell {
+                    Some((ch, style)) => spans.push(Span::styled(ch.to_string(), *style)),
+                    None => spans.push(Span::styled(" ".to_string(), empty_style)),
                 }
             }
             Line::from(spans)
         })
         .collect();
-    let world = Paragraph::new(lines);
-    f.render_widget(world, inner);
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
-fn draw_bottom(f: &mut Frame, area: Rect, _app: &App) {
-    let p = Paragraph::new(Line::from(vec![
-        Span::styled("[Esc]", Style::default().fg(theme::ACCENT)),
-        Span::styled(" quit", Style::default().fg(theme::TEXT_DIM)),
-    ]));
+fn draw_bottom(f: &mut Frame, area: Rect, _app: &App, world: &WorldView) {
+    let mut spans: Vec<Span> = world
+        .players
+        .iter()
+        .flat_map(|p| {
+            let label = if p.is_self {
+                format!("{}(du) ", p.name)
+            } else {
+                format!("{} ", p.name)
+            };
+            vec![Span::styled(
+                label,
+                Style::default()
+                    .fg(Color::Rgb(p.color.r, p.color.g, p.color.b))
+                    .add_modifier(Modifier::BOLD),
+            )]
+        })
+        .collect();
+    spans.push(Span::styled("  [Esc]", Style::default().fg(theme::ACCENT)));
+    spans.push(Span::styled(" quit", Style::default().fg(theme::TEXT_DIM)));
+
+    let p = Paragraph::new(Line::from(spans));
     f.render_widget(p, area);
 }
 

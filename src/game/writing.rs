@@ -1,4 +1,6 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Direction {
     Up,
     Down,
@@ -74,18 +76,39 @@ pub fn buffer_ends_with_trigger(word: &str) -> bool {
     match_trigger_suffix(word).is_some()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Initial brightness of a freshly written tile.
+pub const TILE_MAX_BRIGHTNESS: u8 = 200;
+
+/// Number of most-recent tiles that are always kept at full brightness.
+pub const TRAIL_SAFE_ZONE: usize = 75;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tile {
     pub pos: (i32, i32),
     pub ch: char,
-    /// Engine tick when this tile was written. Used by render to compute age/fade.
+    /// Engine tick when this tile was written.
     pub tick: u64,
     /// Remaining glow ticks. Non-zero = highlight as part of a recently-fired trigger.
     pub glow: u32,
+    /// Current brightness (0 = invisible and will be removed, TILE_MAX_BRIGHTNESS = full).
+    pub brightness: u8,
 }
 
 /// How many ticks a trigger-tile glows after firing.
 pub const GLOW_TICKS: u32 = 30;
+
+/// Derive a per-frame brightness decrease based on how long the player has
+/// been idle (in render frames, ~60 fps).
+///   0–3 frames (< ~50ms): 0  — just typed, no fade
+///   4–63 frames (~65ms–1s):  single linear ramp 3..40
+///   64+ frames (> 1s):   40  — peak (~5 frames to disappear)
+fn fade_rate(idle_frames: u32) -> u8 {
+    match idle_frames {
+        0..=3 => 0,
+        4..=63 => 3 + ((idle_frames - 4) * 37 / 59).min(37) as u8,
+        _ => 40,
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct WritingEngine {
@@ -98,6 +121,8 @@ pub struct WritingEngine {
     pub paused: bool,
     /// Monotonically increasing tick counter, advanced on every char write.
     pub tick: u64,
+    /// Render frames elapsed since the last on_char call. Drives fade speed.
+    pub idle_frames: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,27 +144,45 @@ impl WritingEngine {
             doubt: 0,
             paused: false,
             tick: 0,
+            idle_frames: 0,
         }
     }
 
-    /// Render-time tick: decrement glow on every tile.
+    /// Render-time tick: decrement glow, fade old tiles, remove invisible ones.
     /// Called once per frame from the app loop, regardless of input.
     pub fn tick_visuals(&mut self) {
-        for t in &mut self.trail {
+        self.idle_frames = self.idle_frames.saturating_add(1);
+        let rate = fade_rate(self.idle_frames);
+
+        let safe = TRAIL_SAFE_ZONE;
+        let len = self.trail.len();
+
+        for (i, t) in self.trail.iter_mut().enumerate() {
             if t.glow > 0 {
                 t.glow -= 1;
             }
+            // Tiles inside the safe zone keep full brightness.
+            if i + safe >= len {
+                t.brightness = TILE_MAX_BRIGHTNESS;
+            } else {
+                t.brightness = t.brightness.saturating_sub(rate);
+            }
         }
+
+        // Remove tiles that have fully faded (brightness == 0).
+        self.trail.retain(|t| t.brightness > 0);
     }
 
     pub fn on_char(&mut self, ch: char) -> StepResult {
         let is_boundary = ch.is_whitespace() || matches!(ch, '.' | ',' | '!' | '?' | ';' | ':');
 
+        self.idle_frames = 0;
         let tile = Tile {
             pos: self.cursor,
             ch,
             tick: self.tick,
             glow: 0,
+            brightness: TILE_MAX_BRIGHTNESS,
         };
         self.trail.push(tile.clone());
 
@@ -440,5 +483,62 @@ mod tests {
             e.on_char(ch);
         }
         assert_eq!(e.direction, Direction::Right);
+    }
+
+    #[test]
+    fn tile_and_direction_ron_roundtrip() {
+        let t = Tile {
+            pos: (3, -2),
+            ch: 'x',
+            tick: 7,
+            glow: GLOW_TICKS,
+            brightness: TILE_MAX_BRIGHTNESS,
+        };
+        let s = ron::to_string(&t).unwrap();
+        let back: Tile = ron::from_str(&s).unwrap();
+        assert_eq!(t, back);
+
+        let d = Direction::Left;
+        let s = ron::to_string(&d).unwrap();
+        let back: Direction = ron::from_str(&s).unwrap();
+        assert_eq!(d, back);
+    }
+
+    #[test]
+    fn safe_zone_tiles_never_fade() {
+        let mut e = WritingEngine::new((0, 0));
+        // Write exactly TRAIL_SAFE_ZONE tiles.
+        for ch in ('a'..='z').cycle().take(TRAIL_SAFE_ZONE) {
+            e.on_char(ch);
+        }
+        // Simulate many idle frames (fast fade rate).
+        for _ in 0..200 {
+            e.tick_visuals();
+        }
+        // All tiles are in the safe zone — none should have been removed.
+        assert_eq!(e.trail.len(), TRAIL_SAFE_ZONE);
+        // And all should be at max brightness.
+        assert!(e.trail.iter().all(|t| t.brightness == TILE_MAX_BRIGHTNESS));
+    }
+
+    #[test]
+    fn tiles_outside_safe_zone_fade_and_are_removed() {
+        let mut e = WritingEngine::new((0, 0));
+        // Write enough tiles so the first ones are outside the safe zone.
+        for ch in ('a'..='z').cycle().take(TRAIL_SAFE_ZONE + 10) {
+            e.on_char(ch);
+        }
+        let initial_len = e.trail.len();
+        // Trigger fast fade: many idle frames.
+        for _ in 0..300 {
+            e.tick_visuals();
+        }
+        // Some tiles outside the safe zone should have been removed.
+        assert!(
+            e.trail.len() < initial_len,
+            "old tiles should have been removed"
+        );
+        // The safe zone is still intact.
+        assert!(e.trail.len() >= TRAIL_SAFE_ZONE);
     }
 }
