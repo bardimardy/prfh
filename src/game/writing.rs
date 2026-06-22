@@ -99,14 +99,16 @@ pub const GLOW_TICKS: u32 = 30;
 
 /// Derive a per-frame brightness decrease based on how long the player has
 /// been idle (in render frames, ~60 fps).
-///   < 6 frames  (~100 ms): 0   — just typed, no fade
-///   6–59 frames (up to 1s): 1–3 — gentle fade
-///   ≥ 60 frames (> 1s):     5   — fast fade
+///   0–3  frames (< ~50ms):   0        — just typed, no fade
+///   4–14 frames (~50–230ms): 5..15    — fast typing, gentle fade
+///  15–34 frames (~230–570ms): 15..40  — smooth ramp into fast fade
+///  35+  frames (> ~570ms):   40       — peak fade (~5 frames to disappear)
 fn fade_rate(idle_frames: u32) -> u8 {
     match idle_frames {
-        0..=3 => 0,                                                // < ~50ms: just typed, no fade
-        4..=14 => 5 + ((idle_frames - 4) * 10 / 10).min(10) as u8, // 50–230ms: moderate
-        _ => 200,                                                  // > ~230ms: instant fade
+        0..=3 => 0,
+        4..=14 => 5 + ((idle_frames - 4) * 10 / 10).min(10) as u8,
+        15..=34 => 15 + ((idle_frames - 15) * 25 / 19).min(25) as u8,
+        _ => 40,
     }
 }
 
