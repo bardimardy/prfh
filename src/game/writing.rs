@@ -1,4 +1,6 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Direction {
     Up,
     Down,
@@ -74,7 +76,7 @@ pub fn buffer_ends_with_trigger(word: &str) -> bool {
     match_trigger_suffix(word).is_some()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tile {
     pub pos: (i32, i32),
     pub ch: char,
@@ -440,5 +442,18 @@ mod tests {
             e.on_char(ch);
         }
         assert_eq!(e.direction, Direction::Right);
+    }
+
+    #[test]
+    fn tile_and_direction_ron_roundtrip() {
+        let t = Tile { pos: (3, -2), ch: 'x', tick: 7, glow: GLOW_TICKS };
+        let s = ron::to_string(&t).unwrap();
+        let back: Tile = ron::from_str(&s).unwrap();
+        assert_eq!(t, back);
+
+        let d = Direction::Left;
+        let s = ron::to_string(&d).unwrap();
+        let back: Direction = ron::from_str(&s).unwrap();
+        assert_eq!(d, back);
     }
 }
