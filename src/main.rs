@@ -27,7 +27,7 @@ fn main() -> Result<()> {
 
 fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     let debug = std::env::var("PRFH_DEBUG").is_ok();
-    let mut app = App::new();
+    let mut app = App::new_single();
     app.debug = debug;
 
     while !app.should_quit {

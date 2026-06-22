@@ -1,11 +1,18 @@
+use crate::game::world::{PlayerId, PlayerView, WorldView};
 use crate::game::writing::{StepResult, WritingEngine};
+use crate::net::server::HostState;
+
+pub enum Mode {
+    Single(WritingEngine),
+    Host(HostState),
+    Client(WorldView),
+}
 
 pub struct App {
     pub should_quit: bool,
-    pub writing: WritingEngine,
+    pub mode: Mode,
     pub day: i64,
     pub last_event: String,
-    /// Sticky trigger banner — set when a trigger fires, decremented per tick.
     pub trigger_banner: Option<String>,
     pub trigger_banner_ticks: u32,
     pub debug: bool,
@@ -13,16 +20,51 @@ pub struct App {
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new_single() -> Self {
         Self {
             should_quit: false,
-            writing: WritingEngine::new((0, 0)),
+            mode: Mode::Single(WritingEngine::new((0, 0))),
             day: 4380,
             last_event: String::from("type to write yourself a path"),
             trigger_banner: None,
             trigger_banner_ticks: 0,
             debug: false,
             debug_lines: Vec::new(),
+        }
+    }
+
+    pub fn self_id(&self) -> PlayerId {
+        match &self.mode {
+            Mode::Single(_) => 0,
+            Mode::Host(h) => h.self_id(),
+            Mode::Client(w) => w.self_id,
+        }
+    }
+
+    pub fn local_engine(&self) -> Option<&WritingEngine> {
+        match &self.mode {
+            Mode::Single(e) => Some(e),
+            Mode::Host(h) => Some(h.local_engine()),
+            Mode::Client(_) => None,
+        }
+    }
+
+    pub fn world_view(&self) -> WorldView {
+        match &self.mode {
+            Mode::Single(e) => WorldView {
+                self_id: 0,
+                players: vec![PlayerView {
+                    id: 0,
+                    color: crate::game::world::PALETTE[0],
+                    name: "you".into(),
+                    trail: e.trail.clone(),
+                    cursor: e.cursor,
+                    direction: e.direction,
+                    is_self: true,
+                }],
+            },
+            Mode::Host(h) => h.world_view(),
+            Mode::Client(w) => w.clone(),
         }
     }
 
@@ -42,38 +84,46 @@ impl App {
                 self.trigger_banner = None;
             }
         }
-        self.writing.tick_visuals();
+        match &mut self.mode {
+            Mode::Single(e) => e.tick_visuals(),
+            Mode::Host(h) => h.tick_visuals(),
+            Mode::Client(w) => w.tick_visuals(),
+        }
     }
 
+    /// Single-player local input. (Host/Client routing added in Task 9.)
     pub fn on_char(&mut self, c: char) {
-        // Spacebar is disabled — it writes no tile and never moves the cursor.
         if c == ' ' {
             return;
         }
-        let result = self.writing.on_char(c);
-        self.last_event = match &result {
-            StepResult::Wrote(_) => format!("wrote '{}'", c),
-            StepResult::WroteAndTurned(_, d) => format!("turned: {:?}", d),
-            StepResult::WroteAndStopped(_) => "paused".into(),
-            StepResult::Erased => "erased".into(),
-        };
-        if let StepResult::WroteAndTurned(_, d) = result {
-            self.trigger_banner = Some(format!("⟹ TURNED: {:?}", d));
-            self.trigger_banner_ticks = 90; // ~1.5s at 60 FPS
-        }
-        if matches!(result, StepResult::WroteAndStopped(_)) {
-            self.trigger_banner = Some("⟹ STOP — next char overwrites".into());
-            self.trigger_banner_ticks = 90;
+        if let Mode::Single(e) = &mut self.mode {
+            let result = e.on_char(c);
+            self.last_event = match &result {
+                StepResult::Wrote(_) => format!("wrote '{}'", c),
+                StepResult::WroteAndTurned(_, d) => format!("turned: {:?}", d),
+                StepResult::WroteAndStopped(_) => "paused".into(),
+                StepResult::Erased => "erased".into(),
+            };
+            if let StepResult::WroteAndTurned(_, d) = result {
+                self.set_banner(format!("⟹ TURNED: {:?}", d));
+            }
+            if matches!(result, StepResult::WroteAndStopped(_)) {
+                self.set_banner("⟹ STOP — next char overwrites".into());
+            }
         }
     }
 
     pub fn on_backspace(&mut self) {
-        self.writing.on_backspace();
-        self.last_event = format!("walked back. doubt: {}", self.writing.doubt);
+        if let Mode::Single(e) = &mut self.mode {
+            e.on_backspace();
+            self.last_event = format!("walked back. doubt: {}", e.doubt);
+        }
     }
 
-    pub fn on_enter(&mut self) {
-        // In immediate-mode, triggers fire as soon as the word is typed —
-        // Enter has no role. Ignore.
+    pub fn on_enter(&mut self) {}
+
+    fn set_banner(&mut self, msg: String) {
+        self.trigger_banner = Some(msg);
+        self.trigger_banner_ticks = 90;
     }
 }

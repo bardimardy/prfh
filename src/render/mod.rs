@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::game::world::WorldView;
 use crate::game::writing::{buffer_ends_with_trigger, Direction};
 use ratatui::{
     layout::{Constraint, Direction as LayoutDirection, Layout, Rect},
@@ -19,10 +20,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
+    let world = app.world_view();
     draw_hud(f, chunks[0], app);
     draw_banner(f, chunks[1], app);
-    draw_world(f, chunks[2], app);
-    draw_bottom(f, chunks[3], app);
+    draw_world(f, chunks[2], &world);
+    draw_bottom(f, chunks[3], app, &world);
 
     if app.debug {
         draw_debug_overlay(f, app);
@@ -41,13 +43,15 @@ fn draw_debug_overlay(f: &mut Frame, app: &App) {
         height: h,
     };
     let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(Span::styled(
-        format!(
-            "dir={:?} word=\"{}\" cur={:?}",
-            app.writing.direction, app.writing.current_word, app.writing.cursor
-        ),
-        Style::default().fg(Color::LightCyan),
-    )));
+    if let Some(e) = app.local_engine() {
+        lines.push(Line::from(Span::styled(
+            format!(
+                "dir={:?} word=\"{}\" cur={:?}",
+                e.direction, e.current_word, e.cursor
+            ),
+            Style::default().fg(Color::LightCyan),
+        )));
+    }
     for l in &app.debug_lines {
         lines.push(Line::from(Span::styled(
             l.clone(),
@@ -78,146 +82,158 @@ fn draw_banner(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn draw_hud(f: &mut Frame, area: Rect, app: &App) {
-    let arrow = match app.writing.direction {
+    let world = app.world_view();
+    let dir = world
+        .players
+        .iter()
+        .find(|p| p.is_self)
+        .map(|p| p.direction)
+        .unwrap_or(Direction::Right);
+    let arrow = match dir {
         Direction::Up => "↑",
         Direction::Down => "↓",
         Direction::Left => "←",
         Direction::Right => "→",
     };
 
-    let word = &app.writing.current_word;
-    let word_is_trigger = buffer_ends_with_trigger(word);
-    let word_color = if word_is_trigger {
-        Color::LightGreen
-    } else {
-        Color::DarkGray
+    let (word_display, word_is_trigger, combo, doubt) = match app.local_engine() {
+        Some(e) => (
+            if e.current_word.is_empty() { "—".to_string() } else { e.current_word.clone() },
+            buffer_ends_with_trigger(&e.current_word),
+            e.combo,
+            e.doubt,
+        ),
+        None => ("—".to_string(), false, 0, 0),
     };
-    let word_display = if word.is_empty() {
-        "—".to_string()
-    } else {
-        word.clone()
-    };
+    let word_color = if word_is_trigger { Color::LightGreen } else { Color::DarkGray };
 
     let hud = Paragraph::new(Line::from(vec![
-        Span::styled(
-            " PULL REQUEST FROM HELL ",
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(" PULL REQUEST FROM HELL ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
         Span::raw("  "),
         Span::styled(format!("dir {} ", arrow), Style::default().fg(Color::Yellow)),
         Span::raw("  word: "),
         Span::styled(word_display, Style::default().fg(word_color).add_modifier(Modifier::BOLD)),
         Span::raw("  "),
-        Span::styled(
-            format!("combo x{}", app.writing.combo),
-            Style::default().fg(Color::Magenta),
-        ),
+        Span::styled(format!("combo x{}", combo), Style::default().fg(Color::Magenta)),
         Span::raw("  "),
-        Span::styled(
-            format!("doubt {}", app.writing.doubt),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(format!("doubt {}", doubt), Style::default().fg(Color::DarkGray)),
         Span::raw("  "),
-        Span::styled(
-            format!("day {}", app.day),
-            Style::default().fg(Color::Yellow),
-        ),
+        Span::styled(format!("day {}", app.day), Style::default().fg(Color::Yellow)),
     ]))
     .block(Block::default().borders(Borders::ALL));
     f.render_widget(hud, area);
 }
 
-fn draw_world(f: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" /work/repo/career.md ");
+fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
+    let block = Block::default().borders(Borders::ALL).title(" /work/repo/career.md ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Render the writing trail in world-space, centered on cursor
     let w = inner.width as i32;
     let h = inner.height as i32;
     let center = (w / 2, h / 2);
-    let cursor = app.writing.cursor;
 
-    // Per-cell glyph + optional style. None = empty space.
+    let self_player = world.players.iter().find(|p| p.is_self);
+    let cursor = self_player.map(|p| p.cursor).unwrap_or((0, 0));
+
     let mut grid: Vec<Vec<Option<(char, Style)>>> = vec![vec![None; w as usize]; h as usize];
 
-    let now = app.writing.tick;
-    // Fade math: brightness drops by FADE_PER_TICK per tick down to MIN_BRIGHTNESS.
+    // newest tick across all trails, for fade reference
+    let now = world
+        .players
+        .iter()
+        .flat_map(|p| p.trail.iter().map(|t| t.tick))
+        .max()
+        .unwrap_or(0);
+
     const FADE_PER_TICK: u64 = 2;
     const MAX_BRIGHTNESS: u64 = 200;
     const MIN_BRIGHTNESS: u64 = 60;
 
-    for tile in &app.writing.trail {
-        let rx = tile.pos.0 - cursor.0 + center.0;
-        let ry = tile.pos.1 - cursor.1 + center.1;
+    for player in &world.players {
+        for tile in &player.trail {
+            let rx = tile.pos.0 - cursor.0 + center.0;
+            let ry = tile.pos.1 - cursor.1 + center.1;
+            if rx < 0 || ry < 0 || rx >= w || ry >= h {
+                continue;
+            }
+            let style = if tile.glow > 0 {
+                Style::default().fg(Color::LightYellow).bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+            } else {
+                let age = now.saturating_sub(tile.tick);
+                let b = MAX_BRIGHTNESS
+                    .saturating_sub(age.saturating_mul(FADE_PER_TICK))
+                    .max(MIN_BRIGHTNESS);
+                let scale = |c: u8| ((c as u64 * b) / MAX_BRIGHTNESS).min(255) as u8;
+                Style::default().fg(Color::Rgb(scale(player.color.r), scale(player.color.g), scale(player.color.b)))
+            };
+            grid[ry as usize][rx as usize] = Some((tile.ch, style));
+        }
+    }
+
+    // Cursor markers: self = black-on-yellow; others = arrow in their color.
+    for player in &world.players {
+        let rx = player.cursor.0 - cursor.0 + center.0;
+        let ry = player.cursor.1 - cursor.1 + center.1;
         if rx < 0 || ry < 0 || rx >= w || ry >= h {
             continue;
         }
-        let style = if tile.glow > 0 {
+        let arrow_ch = match player.direction {
+            Direction::Up => '▲',
+            Direction::Down => '▼',
+            Direction::Left => '◀',
+            Direction::Right => '▶',
+        };
+        let style = if player.is_self {
+            Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
+        } else {
             Style::default()
-                .fg(Color::LightYellow)
+                .fg(Color::Rgb(player.color.r, player.color.g, player.color.b))
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD)
-        } else {
-            let age = now.saturating_sub(tile.tick);
-            let b = MAX_BRIGHTNESS
-                .saturating_sub(age.saturating_mul(FADE_PER_TICK))
-                .max(MIN_BRIGHTNESS) as u8;
-            Style::default().fg(Color::Rgb(b, b, b))
         };
-        // Later tiles overwrite earlier ones on the same cell (covers overwrite-on-stop).
-        grid[ry as usize][rx as usize] = Some((tile.ch, style));
+        grid[ry as usize][rx as usize] = Some((arrow_ch, style));
     }
 
-    // Direction-indicator glyph (sits at cursor center as an inverted cell)
-    let arrow_ch = match app.writing.direction {
-        Direction::Up => '▲',
-        Direction::Down => '▼',
-        Direction::Left => '◀',
-        Direction::Right => '▶',
-    };
-
-    let cursor_style = Style::default()
-        .fg(Color::Black)
-        .bg(Color::Yellow)
-        .add_modifier(Modifier::BOLD);
     let empty_style = Style::default();
-
     let lines: Vec<Line> = grid
         .iter()
-        .enumerate()
-        .map(|(y, row)| {
+        .map(|row| {
             let mut spans: Vec<Span> = Vec::with_capacity(row.len());
-            for (x, cell) in row.iter().enumerate() {
-                if x as i32 == center.0 && y as i32 == center.1 {
-                    spans.push(Span::styled(arrow_ch.to_string(), cursor_style));
-                } else if let Some((ch, style)) = cell {
-                    spans.push(Span::styled(ch.to_string(), *style));
-                } else {
-                    spans.push(Span::styled(" ".to_string(), empty_style));
+            for cell in row.iter() {
+                match cell {
+                    Some((ch, style)) => spans.push(Span::styled(ch.to_string(), *style)),
+                    None => spans.push(Span::styled(" ".to_string(), empty_style)),
                 }
             }
             Line::from(spans)
         })
         .collect();
-    let world = Paragraph::new(lines);
-    f.render_widget(world, inner);
+    f.render_widget(Paragraph::new(lines), inner);
 }
 
-fn draw_bottom(f: &mut Frame, area: Rect, app: &App) {
+fn draw_bottom(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
+    let roster: Vec<Span> = world
+        .players
+        .iter()
+        .flat_map(|p| {
+            let label = if p.is_self { format!("{}(du)", p.name) } else { p.name.clone() };
+            vec![
+                Span::styled(
+                    format!("{} ", label),
+                    Style::default().fg(Color::Rgb(p.color.r, p.color.g, p.color.b)).add_modifier(Modifier::BOLD),
+                ),
+            ]
+        })
+        .collect();
+
     let inner_lines = vec![
-        Line::from(Span::styled(
-            app.last_event.as_str(),
-            Style::default().fg(Color::DarkGray),
-        )),
+        Line::from(roster),
+        Line::from(Span::styled(app.last_event.as_str(), Style::default().fg(Color::DarkGray))),
         Line::from(vec![
             Span::styled("[Esc]", Style::default().fg(Color::Cyan)),
             Span::raw(" quit  "),
-            Span::raw("triggers fire immediately: "),
+            Span::raw("triggers: "),
             Span::styled("up down left right back stop", Style::default().fg(Color::Yellow)),
         ]),
     ];
