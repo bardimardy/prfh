@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Direction as LayoutDirection, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
@@ -16,7 +16,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             Constraint::Length(3),
             Constraint::Length(1),
             Constraint::Min(5),
-            Constraint::Length(5),
+            Constraint::Length(1),
         ])
         .split(f.area());
 
@@ -34,7 +34,7 @@ fn draw_debug_overlay(f: &mut Frame, app: &App) {
     use ratatui::widgets::Clear;
     let area = f.area();
     let w = area.width.min(60);
-    let h = (app.debug_lines.len() as u16 + 4).min(area.height);
+    let h = (app.debug_lines.len() as u16 + 5).min(area.height);
     let rect = Rect {
         x: area.width.saturating_sub(w + 1),
         y: 4,
@@ -48,6 +48,10 @@ fn draw_debug_overlay(f: &mut Frame, app: &App) {
             app.writing.direction, app.writing.current_word, app.writing.cursor
         ),
         Style::default().fg(Color::LightCyan),
+    )));
+    lines.push(Line::from(Span::styled(
+        format!("last: {}", app.last_event),
+        Style::default().fg(theme::TEXT_DIM),
     )));
     for l in &app.debug_lines {
         lines.push(Line::from(Span::styled(
@@ -182,23 +186,11 @@ fn draw_world(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(world, inner);
 }
 
-fn draw_bottom(f: &mut Frame, area: Rect, app: &App) {
-    let inner_lines = vec![
-        Line::from(Span::styled(
-            app.last_event.as_str(),
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(vec![
-            Span::styled("[Esc]", Style::default().fg(Color::Cyan)),
-            Span::raw(" quit  "),
-            Span::raw("triggers fire immediately: "),
-            Span::styled("up down left right back stop", Style::default().fg(Color::Yellow)),
-        ]),
-    ];
-
-    let p = Paragraph::new(inner_lines)
-        .block(Block::default().borders(Borders::ALL))
-        .wrap(Wrap { trim: false });
+fn draw_bottom(f: &mut Frame, area: Rect, _app: &App) {
+    let p = Paragraph::new(Line::from(vec![
+        Span::styled("[Esc]", Style::default().fg(theme::ACCENT)),
+        Span::styled(" quit", Style::default().fg(theme::TEXT_DIM)),
+    ]));
     f.render_widget(p, area);
 }
 
@@ -231,5 +223,37 @@ mod tests {
         assert!(!out.contains("word:"), "word-Anzeige noch in der Topbar");
         assert!(!out.contains("doubt"), "doubt noch in der Topbar");
         assert!(!out.contains("day"), "day noch in der Topbar");
+    }
+
+    #[test]
+    fn last_event_only_in_debug_overlay() {
+        // Sichtbarer, eindeutiger Marker als last_event.
+        let mut app = App::new();
+        app.last_event = "ZZMARKERZZ".into();
+
+        // Ohne Debug: Marker darf nirgends auftauchen.
+        app.debug = false;
+        assert!(
+            !render_to_string(&app).contains("ZZMARKERZZ"),
+            "last_event leakt ohne PRFH_DEBUG"
+        );
+
+        // Mit Debug: Marker erscheint im Overlay.
+        app.debug = true;
+        assert!(
+            render_to_string(&app).contains("ZZMARKERZZ"),
+            "last_event fehlt im Debug-Overlay"
+        );
+    }
+
+    #[test]
+    fn no_verbose_trigger_help() {
+        let app = App::new();
+        let out = render_to_string(&app);
+        assert!(
+            !out.contains("up down left right"),
+            "verbose Trigger-Hilfe noch da"
+        );
+        assert!(out.contains("Esc"), "Quit-Hinweis fehlt");
     }
 }
