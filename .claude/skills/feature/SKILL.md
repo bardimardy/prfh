@@ -3,7 +3,7 @@ name: feature
 description: Startet ein neues Feature oder eine Implementierung im prfh-Kollaborations-Flow (Issue → Claim → Branch → Draft-PR → TDD → Review). Manuell via /feature aufrufen; legt Issues an, pusht Branches und öffnet PRs.
 argument-hint: <kurze Feature-Beschreibung> [issue:<nr>]
 disable-model-invocation: true
-allowed-tools: Bash(gh *), Bash(git *), Bash(cargo *)
+allowed-tools: Bash(gh *), Bash(git *), Bash(cargo *), Read, Edit, Write, Glob, Grep
 ---
 
 # /feature — Feature-Bootstrap im prfh-Flow
