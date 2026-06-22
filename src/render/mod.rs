@@ -215,8 +215,11 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
         grid[ry as usize][rx as usize] = Some((tile.ch, style));
     }
 
-    // Cursor markers: self = black-on-yellow; others = arrow in their color.
+    // Cursor marker: only rendered for the local player.
     for player in &world.players {
+        if !player.is_self {
+            continue;
+        }
         let rx = player.cursor.0 - cursor.0 + center.0;
         let ry = player.cursor.1 - cursor.1 + center.1;
         if rx < 0 || ry < 0 || rx >= w || ry >= h {
