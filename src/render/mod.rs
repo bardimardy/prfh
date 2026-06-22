@@ -21,7 +21,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .split(f.area());
 
     let world = app.world_view();
-    draw_hud(f, chunks[0], app);
+    draw_hud(f, chunks[0], app, &world);
     draw_banner(f, chunks[1], app);
     draw_world(f, chunks[2], &world);
     draw_bottom(f, chunks[3], app, &world);
@@ -81,8 +81,7 @@ fn draw_banner(f: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn draw_hud(f: &mut Frame, area: Rect, app: &App) {
-    let world = app.world_view();
+fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
     let dir = world
         .players
         .iter()

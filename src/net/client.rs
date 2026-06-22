@@ -37,7 +37,7 @@ pub fn connect(addr: &str, name: &str) -> Result<(WorldView, ClientHandle)> {
     if reader.read_line(&mut line)? == 0 {
         return Err(anyhow!("Verbindung vom Host geschlossen"));
     }
-    let mut world = match decode_line::<ServerMsg>(&line)? {
+    let world = match decode_line::<ServerMsg>(&line)? {
         ServerMsg::Welcome {
             your_id,
             color,
@@ -54,7 +54,6 @@ pub fn connect(addr: &str, name: &str) -> Result<(WorldView, ClientHandle)> {
         ServerMsg::Reject { reason } => return Err(anyhow!(reason)),
         _ => return Err(anyhow!("unerwartete erste Nachricht vom Host")),
     };
-    let _ = &mut world;
 
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {

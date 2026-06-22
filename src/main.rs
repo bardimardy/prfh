@@ -12,10 +12,33 @@ use prfh::{
     render,
 };
 
+/// Resolve an optional join address before entering raw mode.
+/// Prints a status line to stdout, then either returns the resolved
+/// `"host:port"` string or exits the process with an error message.
+fn resolve_join_addr(raw_addr: Option<String>) -> String {
+    use prfh::net::discovery::{discover, TCP_PORT};
+    use std::time::Duration as StdDuration;
+
+    match raw_addr {
+        Some(a) if a.contains(':') => a,
+        Some(a) => format!("{}:{}", a, TCP_PORT),
+        None => {
+            println!("Suche nach Spielen im LAN...");
+            let found = discover(StdDuration::from_secs(2));
+            if found.is_empty() {
+                eprintln!("Keine Spiele im LAN gefunden. Nutze `prfh join <ip>`.");
+                std::process::exit(1);
+            }
+            let e = &found[0];
+            format!("{}:{}", e.addr, e.tcp_port)
+        }
+    }
+}
+
 enum Cli {
     Single,
     Host { name: String },
-    Join { addr: Option<String>, name: String },
+    Join { addr: String, name: String },
 }
 
 fn parse_cli() -> Cli {
@@ -38,8 +61,9 @@ fn parse_cli() -> Cli {
             },
         },
         Some("join") => {
-            let addr = args.get(1).filter(|a| !a.starts_with("--")).cloned();
+            let raw_addr = args.get(1).filter(|a| !a.starts_with("--")).cloned();
             let name = name_of(&args);
+            let addr = resolve_join_addr(raw_addr);
             Cli::Join {
                 addr,
                 name: if name.is_empty() {
@@ -63,7 +87,7 @@ fn main() -> Result<()> {
     let debug = std::env::var("PRFH_DEBUG").is_ok();
 
     let result = match cli {
-        Cli::Single => run(&mut terminal),
+        Cli::Single => run(&mut terminal, debug),
         Cli::Host { name } => run_host(&mut terminal, name, debug),
         Cli::Join { addr, name } => run_client(&mut terminal, addr, name, debug),
     };
@@ -75,8 +99,7 @@ fn main() -> Result<()> {
     result
 }
 
-fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result<()> {
-    let debug = std::env::var("PRFH_DEBUG").is_ok();
+fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, debug: bool) -> Result<()> {
     let mut app = App::new_single();
     app.debug = debug;
 
@@ -118,34 +141,19 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result<()> {
 
 fn run_client<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
-    addr: Option<String>,
+    addr: String,
     name: String,
     debug: bool,
 ) -> Result<()> {
     use prfh::net::client::connect;
-    use prfh::net::discovery::{discover, TCP_PORT};
     use prfh::net::protocol::InputEvent;
-    use std::time::Duration as StdDuration;
-
-    let target = match addr {
-        Some(a) if a.contains(':') => a,
-        Some(a) => format!("{}:{}", a, TCP_PORT),
-        None => {
-            let found = discover(StdDuration::from_secs(2));
-            if found.is_empty() {
-                anyhow::bail!("Keine Spiele im LAN gefunden. Nutze `prfh join <ip>`.");
-            }
-            let e = &found[0];
-            format!("{}:{}", e.addr, e.tcp_port)
-        }
-    };
 
     let name = if name.is_empty() {
         "Player".into()
     } else {
         name
     };
-    let (world, mut handle) = connect(&target, &name)?;
+    let (world, mut handle) = connect(&addr, &name)?;
     let mut app = App::new_with_mode(Mode::Client(world));
     app.debug = debug;
 
@@ -269,6 +277,8 @@ fn run_host<B: ratatui::backend::Backend>(
                         }
                     }
                     HostEvent::Disconnected { conn_id } => {
+                        // Rejected or duplicate connections were never added to
+                        // conn_player, so the guard safely falls through for them.
                         if let Some(pid) = conn_player.remove(&conn_id) {
                             streams.remove(&conn_id);
                             if let Some(msg) = h.remove_player(pid) {

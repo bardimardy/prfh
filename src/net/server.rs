@@ -9,7 +9,7 @@ use crate::game::world::{
     PlayerColor, PlayerId, PlayerSnapshot, PlayerView, WorldView, MAX_PLAYERS, PALETTE,
 };
 use crate::game::writing::{StepResult, WritingEngine, GLOW_TICKS};
-use crate::net::protocol::{decode_line, ClientMsg, InputEvent, ServerMsg};
+use crate::net::protocol::{decode_line, encode_line, ClientMsg, InputEvent, ServerMsg};
 
 pub enum HostEvent {
     Hello {
@@ -93,7 +93,7 @@ fn reader_loop(conn_id: u64, stream: TcpStream, tx: Sender<HostEvent>) {
 
 /// Write one server message to a stream (best-effort).
 pub fn send_msg(stream: &mut TcpStream, msg: &ServerMsg) -> std::io::Result<()> {
-    stream.write_all(crate::net::protocol::encode_line(msg).as_bytes())
+    stream.write_all(encode_line(msg).as_bytes())
 }
 
 pub const HOST_ID: PlayerId = 0;
@@ -113,7 +113,6 @@ pub struct JoinOutcome {
 
 pub struct HostState {
     players: BTreeMap<PlayerId, Player>,
-    next_id: PlayerId,
     join_seq: u32,
 }
 
@@ -121,13 +120,16 @@ impl HostState {
     pub fn new(host_name: String) -> Self {
         let mut s = Self {
             players: BTreeMap::new(),
-            next_id: 0,
             join_seq: 0,
         };
         // Host always exists as id 0, color index 0, spawn (0,0).
         s.insert_player(HOST_ID, 0, host_name);
-        s.next_id = 1;
         s
+    }
+
+    /// Returns the lowest free player id (>= 1), or None if all 255 slots are taken.
+    fn next_free_id(&self) -> Option<PlayerId> {
+        (1..=u8::MAX).find(|id| !self.players.contains_key(id))
     }
 
     fn insert_player(&mut self, id: PlayerId, color_idx: usize, name: String) {
@@ -152,8 +154,9 @@ impl HostState {
         let color_idx = self
             .free_color_idx()
             .ok_or_else(|| format!("Spiel voll (max {} Spieler)", MAX_PLAYERS))?;
-        let id = self.next_id;
-        self.next_id += 1;
+        let id = self
+            .next_free_id()
+            .ok_or_else(|| "Spiel voll (alle Spieler-IDs belegt)".to_string())?;
         self.insert_player(id, color_idx, name.clone());
         let color = PALETTE[color_idx];
         let welcome = ServerMsg::Welcome {
@@ -336,6 +339,24 @@ mod tests {
             }
             _ => panic!("expected Wrote"),
         }
+    }
+
+    #[test]
+    fn add_player_reuses_lowest_free_id() {
+        let mut s = HostState::new("Host".into());
+        let a = s.add_player("A".into()).unwrap();
+        let b = s.add_player("B".into()).unwrap();
+        assert_eq!(a.id, 1);
+        assert_eq!(b.id, 2);
+        // ids never equal HOST_ID
+        assert_ne!(a.id, HOST_ID);
+        assert_ne!(b.id, HOST_ID);
+        // remove player 1 (lowest non-host id)
+        s.remove_player(a.id);
+        // next joiner should reuse id 1 (lowest free), not 3
+        let c = s.add_player("C".into()).unwrap();
+        assert_eq!(c.id, 1, "should reuse freed id 1, not allocate 3");
+        assert_ne!(c.id, HOST_ID);
     }
 
     #[test]
