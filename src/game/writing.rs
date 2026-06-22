@@ -106,7 +106,7 @@ fn fade_rate(idle_frames: u32) -> u8 {
     match idle_frames {
         0..=5 => 0,
         6..=59 => 1 + ((idle_frames - 6) * 4 / 54).min(4) as u8,
-        _ => 50,
+        _ => 200,
     }
 }
 
