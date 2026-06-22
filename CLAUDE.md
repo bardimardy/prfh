@@ -98,12 +98,34 @@ nützlicher Slash-Command, Skill oder eine neue Konvention → ergänzen.
 - Viele kleine Dateien statt eines wachsenden Monolithen → weniger Merge-Konflikte.
 - `.claude/settings.local.json` ist persönlich und bleibt gitignored.
 
+### Learnings nach Implementationen festhalten (Norm)
+
+Bringt eine Implementierung ein **nicht-offensichtliches, wiederverwendbares Learning**
+zutage — ein verifizierter Panic, eine API-Falle, eine Versions-/Build-Eigenheit, ein
+Test-Muster, ein Kollisions-Schnitt —, **halte es im selben PR fest**, statt es im
+Gedächtnis verpuffen zu lassen:
+
+- Domänenwissen zu einem Subsystem → fokussiertes **Skill** unter `.claude/skills/<thema>/`
+  (model-invocable, mit Trigger-`description`), damit die nächste Instanz es automatisch lädt.
+- Projektweite Regel/Konvention → kurzer Eintrag hier in `CLAUDE.md`.
+
+Maßstab ist „**wenn wichtig**": Würde die nächste Instanz ohne dieses Wissen denselben
+Fehler machen oder die Falle erneut suchen müssen? Dann festhalten. Reine Wald-und-Wiesen-
+Implementierung ohne Überraschung → nichts dokumentieren (kein Lärm). Das ist eine
+Arbeitsnorm, kein Hook: „wichtig" ist eine Urteils­frage, die kein deterministischer
+Trigger treffen kann.
+
 ## Code-Konventionen
 
 - Rust 2021, `cargo fmt`-Stil. Keine Warnungen (kein `#[allow]` zum Verstecken — toten
   Code entfernen).
 - Schreib Code, der zum umgebenden Code passt (Naming, Kommentar-Dichte, Idiome).
 - Die Base-Mechanik lebt in `src/game/writing.rs`; Rendering in `src/render/`.
+- Visuelle Effekte/Animationen laufen über `src/effects/` (tachyonfx-Wrapper) + den
+  `process_effects`-Render-Hook. **Bevor du Effekte anfasst:** Skill `effects` lesen —
+  es kennt die verifizierte tachyonfx-0.25-API und die HARTE Non-Overshoot-Panik-Regel
+  für `expand` (nur `safe_expand` benutzen). Effekte sind nicht unit-testbar; sie werden
+  per „bis zum Ende prozessiert, ohne Panik"-Smoke-Test abgesichert.
 
 ## Spezifikationen
 
