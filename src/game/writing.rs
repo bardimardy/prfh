@@ -104,9 +104,9 @@ pub const GLOW_TICKS: u32 = 30;
 ///   ≥ 60 frames (> 1s):     5   — fast fade
 fn fade_rate(idle_frames: u32) -> u8 {
     match idle_frames {
-        0..=5 => 0,
-        6..=59 => 1 + ((idle_frames - 6) * 4 / 54).min(4) as u8,
-        _ => 200,
+        0..=3 => 0,                                                // < ~50ms: just typed, no fade
+        4..=14 => 5 + ((idle_frames - 4) * 10 / 10).min(10) as u8, // 50–230ms: moderate
+        _ => 200,                                                  // > ~230ms: instant fade
     }
 }
 
