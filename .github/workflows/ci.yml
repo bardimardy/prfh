@@ -9,13 +9,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Schnelles grünes Gate für PRs: nur Linux.
   check:
-    name: Check & Test (${{ matrix.os }})
+    name: Check & Test (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo check
+        run: cargo check --all-targets
+      - name: cargo test
+        run: cargo test --all-targets
+
+  # Volle Plattform-Matrix nur nach dem Merge auf main.
+  matrix:
+    name: Cross-platform (${{ matrix.os }})
+    if: github.event_name == 'push'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        os: [macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

@@ -1,0 +1,28 @@
+name: "🐞 Bug"
+description: "Etwas funktioniert nicht wie erwartet."
+labels: ["bug"]
+body:
+  - type: textarea
+    id: expected
+    attributes:
+      label: Erwartet vs. Tatsächlich
+      description: Was sollte passieren, was passiert stattdessen?
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduktion
+      description: Schritte, um den Bug auszulösen. Idealerweise als fehlschlagender Test formulierbar.
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Umgebung (optional)
+      placeholder: "OS, Terminal, cargo-Version"
+    validations:
+      required: false
