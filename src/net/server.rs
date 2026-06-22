@@ -1,10 +1,84 @@
 use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader, Write};
+use std::net::{TcpListener, TcpStream};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
 
 use crate::game::world::{
     PlayerColor, PlayerId, PlayerSnapshot, PlayerView, WorldView, MAX_PLAYERS, PALETTE,
 };
 use crate::game::writing::{StepResult, WritingEngine, GLOW_TICKS};
-use crate::net::protocol::{InputEvent, ServerMsg};
+use crate::net::protocol::{decode_line, ClientMsg, InputEvent, ServerMsg};
+
+pub enum HostEvent {
+    Hello { conn_id: u64, name: String, write: TcpStream },
+    Input { conn_id: u64, ev: InputEvent },
+    Disconnected { conn_id: u64 },
+}
+
+/// Spawn the accept loop. Each accepted connection gets a reader thread that
+/// first expects a `Hello`, then streams `Input` events, until EOF.
+pub fn spawn_listener(listener: TcpListener) -> Receiver<HostEvent> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let counter = AtomicU64::new(1);
+        for stream in listener.incoming() {
+            let Ok(stream) = stream else { continue };
+            let conn_id = counter.fetch_add(1, Ordering::Relaxed);
+            let tx = tx.clone();
+            thread::spawn(move || reader_loop(conn_id, stream, tx));
+        }
+    });
+    rx
+}
+
+fn reader_loop(conn_id: u64, stream: TcpStream, tx: Sender<HostEvent>) {
+    let write = match stream.try_clone() {
+        Ok(w) => w,
+        Err(_) => return,
+    };
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+
+    // First line must be Hello.
+    line.clear();
+    if reader.read_line(&mut line).unwrap_or(0) == 0 {
+        return;
+    }
+    match decode_line::<ClientMsg>(&line) {
+        Ok(ClientMsg::Hello { name }) => {
+            if tx.send(HostEvent::Hello { conn_id, name, write }).is_err() {
+                return;
+            }
+        }
+        _ => return,
+    }
+
+    // Subsequent lines are Input / Bye.
+    loop {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => match decode_line::<ClientMsg>(&line) {
+                Ok(ClientMsg::Input(ev)) => {
+                    if tx.send(HostEvent::Input { conn_id, ev }).is_err() {
+                        break;
+                    }
+                }
+                Ok(ClientMsg::Bye) | Err(_) => break,
+                Ok(ClientMsg::Hello { .. }) => {} // ignore duplicate hello
+            },
+            Err(_) => break,
+        }
+    }
+    let _ = tx.send(HostEvent::Disconnected { conn_id });
+}
+
+/// Write one server message to a stream (best-effort).
+pub fn send_msg(stream: &mut TcpStream, msg: &ServerMsg) -> std::io::Result<()> {
+    stream.write_all(crate::net::protocol::encode_line(msg).as_bytes())
+}
 
 pub const HOST_ID: PlayerId = 0;
 
