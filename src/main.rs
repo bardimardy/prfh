@@ -15,7 +15,7 @@ use prfh::{
 enum Cli {
     Single,
     Host { name: String },
-    Join { _addr: Option<String>, _name: String },
+    Join { addr: Option<String>, name: String },
 }
 
 fn parse_cli() -> Cli {
@@ -36,7 +36,7 @@ fn parse_cli() -> Cli {
         Some("join") => {
             let addr = args.get(1).filter(|a| !a.starts_with("--")).cloned();
             let name = name_of(&args);
-            Cli::Join { _addr: addr, _name: if name.is_empty() { "Player".into() } else { name } }
+            Cli::Join { addr, name: if name.is_empty() { "Player".into() } else { name } }
         }
         _ => Cli::Single,
     }
@@ -54,8 +54,7 @@ fn main() -> Result<()> {
     let result = match cli {
         Cli::Single => run(&mut terminal),
         Cli::Host { name } => run_host(&mut terminal, name, debug),
-        // TODO(Task 9): run_client(&mut terminal, _addr, _name, debug)
-        Cli::Join { .. } => run(&mut terminal),
+        Cli::Join { addr, name } => run_client(&mut terminal, addr, name, debug),
     };
 
     disable_raw_mode()?;
@@ -106,6 +105,77 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>) -> Result<()> {
     Ok(())
 }
 
+fn run_client<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    addr: Option<String>,
+    name: String,
+    debug: bool,
+) -> Result<()> {
+    use prfh::net::client::connect;
+    use prfh::net::discovery::{discover, TCP_PORT};
+    use prfh::net::protocol::InputEvent;
+    use std::time::Duration as StdDuration;
+
+    let target = match addr {
+        Some(a) if a.contains(':') => a,
+        Some(a) => format!("{}:{}", a, TCP_PORT),
+        None => {
+            let found = discover(StdDuration::from_secs(2));
+            if found.is_empty() {
+                anyhow::bail!("Keine Spiele im LAN gefunden. Nutze `prfh join <ip>`.");
+            }
+            let e = &found[0];
+            format!("{}:{}", e.addr, e.tcp_port)
+        }
+    };
+
+    let name = if name.is_empty() { "Player".into() } else { name };
+    let (world, mut handle) = connect(&target, &name)?;
+    let mut app = App::new_with_mode(Mode::Client(world));
+    app.debug = debug;
+
+    while !app.should_quit {
+        terminal.draw(|f| render::draw(f, &app))?;
+
+        if event::poll(Duration::from_millis(16))? {
+            if let Event::Key(key) = event::read()? {
+                if key.kind == KeyEventKind::Press {
+                    match key.code {
+                        KeyCode::Esc => app.should_quit = true,
+                        KeyCode::Char(' ') => {}
+                        KeyCode::Char(c) => handle.send_input(InputEvent::Char(c)),
+                        KeyCode::Backspace => handle.send_input(InputEvent::Backspace),
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        let mut host_gone = false;
+        loop {
+            match handle.rx.try_recv() {
+                Ok(msg) => {
+                    if let Mode::Client(w) = &mut app.mode {
+                        w.apply(msg);
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    host_gone = true;
+                    break;
+                }
+            }
+        }
+        if host_gone {
+            app.last_event = "Host getrennt — beende.".into();
+            app.should_quit = true;
+        }
+
+        app.tick();
+    }
+    Ok(())
+}
+
 fn run_host<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     name: String,
@@ -120,7 +190,8 @@ fn run_host<B: ratatui::backend::Backend>(
     let listener = TcpListener::bind(("0.0.0.0", TCP_PORT))?;
     listener.set_nonblocking(false)?;
     let rx = spawn_listener(listener);
-    // Discovery-Announce (Task 9): prfh::net::discovery::spawn_announce(name.clone());
+    let announce_name = name.clone();
+    prfh::net::discovery::spawn_announce(announce_name, TCP_PORT);
 
     let mut streams: HashMap<u64, std::net::TcpStream> = HashMap::new();
     let mut conn_player: HashMap<u64, prfh::game::world::PlayerId> = HashMap::new();

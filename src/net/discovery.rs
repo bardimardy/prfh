@@ -1,4 +1,6 @@
-use std::net::IpAddr;
+use std::net::{IpAddr, UdpSocket};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 
@@ -16,6 +18,48 @@ pub struct LobbyEntry {
     pub addr: IpAddr,
     pub name: String,
     pub tcp_port: u16,
+}
+
+/// Host: periodically broadcast an announce packet on the LAN.
+pub fn spawn_announce(name: String, tcp_port: u16) {
+    thread::spawn(move || {
+        let socket = match UdpSocket::bind(("0.0.0.0", 0)) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        if socket.set_broadcast(true).is_err() {
+            return;
+        }
+        let payload = ron::to_string(&Announce { name, tcp_port }).unwrap();
+        let target = ("255.255.255.255", DISCOVERY_PORT);
+        loop {
+            let _ = socket.send_to(payload.as_bytes(), target);
+            thread::sleep(Duration::from_millis(1000));
+        }
+    });
+}
+
+/// Client: listen for announce packets for `timeout`, return deduped lobby.
+pub fn discover(timeout: Duration) -> Vec<LobbyEntry> {
+    let mut entries = Vec::new();
+    let socket = match UdpSocket::bind(("0.0.0.0", DISCOVERY_PORT)) {
+        Ok(s) => s,
+        Err(_) => return entries,
+    };
+    let _ = socket.set_read_timeout(Some(Duration::from_millis(250)));
+    let deadline = Instant::now() + timeout;
+    let mut buf = [0u8; 512];
+    while Instant::now() < deadline {
+        match socket.recv_from(&mut buf) {
+            Ok((n, src)) => {
+                if let Ok(a) = ron::from_str::<Announce>(&String::from_utf8_lossy(&buf[..n])) {
+                    merge_announce(&mut entries, src.ip(), a);
+                }
+            }
+            Err(_) => continue,
+        }
+    }
+    entries
 }
 
 /// Insert or update a lobby entry keyed by source IP (latest announce wins).
