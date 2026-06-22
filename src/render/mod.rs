@@ -1,13 +1,31 @@
 use crate::app::App;
 use crate::game::world::WorldView;
-use crate::game::writing::{buffer_ends_with_trigger, Direction};
+use crate::game::writing::Direction;
+use crate::theme;
 use ratatui::{
+    buffer::Buffer,
     layout::{Constraint, Direction as LayoutDirection, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
+use std::time::Duration;
+use tachyonfx::EffectManager;
+
+/// Post-Render-Hook: treibt einen `EffectManager` gegen den Frame-Buffer.
+/// Generisch über den Key-Typ `K`, damit der spätere Live-Call (C, #31) die
+/// Key-Strategie frei wählt — diese Phase legt KEINE `App`-Felder an. In `draw`
+/// wird das später als `process_effects(mgr, elapsed, f.buffer_mut(), area)`
+/// aufgerufen; hier nur die wiederverwendbare, testbare Funktion.
+pub fn process_effects<K: Clone + std::fmt::Debug + Ord>(
+    manager: &mut EffectManager<K>,
+    elapsed: Duration,
+    buf: &mut Buffer,
+    area: Rect,
+) {
+    manager.process_effects(elapsed.into(), buf, area);
+}
 
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -16,7 +34,7 @@ pub fn draw(f: &mut Frame, app: &App) {
             Constraint::Length(3),
             Constraint::Length(1),
             Constraint::Min(5),
-            Constraint::Length(5),
+            Constraint::Length(1),
         ])
         .split(f.area());
 
@@ -40,7 +58,7 @@ fn draw_debug_overlay(f: &mut Frame, app: &App) {
     use ratatui::widgets::Clear;
     let area = f.area();
     let w = area.width.min(60);
-    let h = (app.debug_lines.len() as u16 + 4).min(area.height);
+    let h = (app.debug_lines.len() as u16 + 5).min(area.height);
     let rect = Rect {
         x: area.width.saturating_sub(w + 1),
         y: 4,
@@ -57,6 +75,10 @@ fn draw_debug_overlay(f: &mut Frame, app: &App) {
             Style::default().fg(Color::LightCyan),
         )));
     }
+    lines.push(Line::from(Span::styled(
+        format!("last: {}", app.last_event),
+        Style::default().fg(theme::TEXT_DIM),
+    )));
     for l in &app.debug_lines {
         lines.push(Line::from(Span::styled(
             l.clone(),
@@ -128,54 +150,23 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
         Direction::Right => "→",
     };
 
-    let (word_display, word_is_trigger, combo, doubt) = match app.local_engine() {
-        Some(e) => (
-            if e.current_word.is_empty() {
-                "—".to_string()
-            } else {
-                e.current_word.clone()
-            },
-            buffer_ends_with_trigger(&e.current_word),
-            e.combo,
-            e.doubt,
-        ),
-        None => ("—".to_string(), false, 0, 0),
-    };
-    let word_color = if word_is_trigger {
-        Color::LightGreen
-    } else {
-        Color::DarkGray
-    };
+    let combo = app.local_engine().map(|e| e.combo).unwrap_or(0);
 
     let hud = Paragraph::new(Line::from(vec![
+        Span::styled("dir ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(
-            " PULL REQUEST FROM HELL ",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            format!("{arrow} "),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
+        Span::styled("combo ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(
-            format!("dir {} ", arrow),
-            Style::default().fg(Color::Yellow),
-        ),
-        Span::raw("  word: "),
-        Span::styled(
-            word_display,
-            Style::default().fg(word_color).add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            format!("combo x{}", combo),
-            Style::default().fg(Color::Magenta),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            format!("doubt {}", doubt),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            format!("day {}", app.day),
-            Style::default().fg(Color::Yellow),
+            format!("x{}", combo),
+            Style::default()
+                .fg(theme::TEXT)
+                .add_modifier(Modifier::BOLD),
         ),
     ]))
     .block(Block::default().borders(Borders::ALL));
@@ -281,44 +272,108 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
-fn draw_bottom(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
-    let roster: Vec<Span> = world
+fn draw_bottom(f: &mut Frame, area: Rect, _app: &App, world: &WorldView) {
+    let mut spans: Vec<Span> = world
         .players
         .iter()
         .flat_map(|p| {
             let label = if p.is_self {
-                format!("{}(du)", p.name)
+                format!("{}(du) ", p.name)
             } else {
-                p.name.clone()
+                format!("{} ", p.name)
             };
             vec![Span::styled(
-                format!("{} ", label),
+                label,
                 Style::default()
                     .fg(Color::Rgb(p.color.r, p.color.g, p.color.b))
                     .add_modifier(Modifier::BOLD),
             )]
         })
         .collect();
+    spans.push(Span::styled("  [Esc]", Style::default().fg(theme::ACCENT)));
+    spans.push(Span::styled(" quit", Style::default().fg(theme::TEXT_DIM)));
 
-    let inner_lines = vec![
-        Line::from(roster),
-        Line::from(Span::styled(
-            app.last_event.as_str(),
-            Style::default().fg(Color::DarkGray),
-        )),
-        Line::from(vec![
-            Span::styled("[Esc]", Style::default().fg(Color::Cyan)),
-            Span::raw(" quit  "),
-            Span::raw("triggers: "),
-            Span::styled(
-                "up down left right back stop",
-                Style::default().fg(Color::Yellow),
-            ),
-        ]),
-    ];
-
-    let p = Paragraph::new(inner_lines)
-        .block(Block::default().borders(Borders::ALL))
-        .wrap(Wrap { trim: false });
+    let p = Paragraph::new(Line::from(spans));
     f.render_widget(p, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn render_to_string(app: &App) -> String {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn topbar_shows_only_dir_and_combo() {
+        let app = App::new();
+        let out = render_to_string(&app);
+        // combo bleibt sichtbar ...
+        assert!(out.contains("combo"), "combo fehlt in der Topbar");
+        // ... aber der ganze Altbestand ist raus:
+        assert!(!out.contains("PULL REQUEST"), "Titel-Banner noch da");
+        assert!(!out.contains("word:"), "word-Anzeige noch in der Topbar");
+        assert!(!out.contains("doubt"), "doubt noch in der Topbar");
+        assert!(!out.contains("day"), "day noch in der Topbar");
+    }
+
+    #[test]
+    fn last_event_only_in_debug_overlay() {
+        // Sichtbarer, eindeutiger Marker als last_event.
+        let mut app = App::new();
+        app.last_event = "ZZMARKERZZ".into();
+
+        // Ohne Debug: Marker darf nirgends auftauchen.
+        app.debug = false;
+        assert!(
+            !render_to_string(&app).contains("ZZMARKERZZ"),
+            "last_event leakt ohne PRFH_DEBUG"
+        );
+
+        // Mit Debug: Marker erscheint im Overlay.
+        app.debug = true;
+        assert!(
+            render_to_string(&app).contains("ZZMARKERZZ"),
+            "last_event fehlt im Debug-Overlay"
+        );
+    }
+
+    #[test]
+    fn no_verbose_trigger_help() {
+        let app = App::new();
+        let out = render_to_string(&app);
+        assert!(
+            !out.contains("up down left right"),
+            "verbose Trigger-Hilfe noch da"
+        );
+        assert!(out.contains("Esc"), "Quit-Hinweis fehlt");
+    }
+
+    #[test]
+    fn process_effects_hook_drives_manager_without_panic() {
+        use crate::effects;
+        use ratatui::buffer::Buffer;
+        use std::time::Duration;
+        use tachyonfx::EffectManager;
+
+        let mut mgr: EffectManager<()> = EffectManager::default();
+        mgr.add_effect(effects::pickup());
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 24, 12));
+        let area = buf.area;
+        for _ in 0..40 {
+            process_effects(&mut mgr, Duration::from_millis(50), &mut buf, area);
+        }
+    }
 }

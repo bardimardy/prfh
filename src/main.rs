@@ -99,7 +99,10 @@ fn main() -> Result<()> {
     result
 }
 
-fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, debug: bool) -> Result<()> {
+fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, debug: bool) -> Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     let mut app = App::new_single();
     app.debug = debug;
 
@@ -144,7 +147,10 @@ fn run_client<B: ratatui::backend::Backend>(
     addr: String,
     name: String,
     debug: bool,
-) -> Result<()> {
+) -> Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     use prfh::net::client::connect;
     use prfh::net::protocol::InputEvent;
 
@@ -213,7 +219,10 @@ fn run_host<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     name: String,
     debug: bool,
-) -> Result<()> {
+) -> Result<()>
+where
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
     use prfh::net::discovery::TCP_PORT;
     use prfh::net::protocol::{InputEvent, ServerMsg};
     use prfh::net::server::{send_msg, spawn_listener, HostEvent, HostState, HOST_ID};

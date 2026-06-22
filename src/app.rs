@@ -2,6 +2,12 @@ use crate::game::world::{PlayerId, PlayerView, WorldView};
 use crate::game::writing::{StepResult, WritingEngine};
 use crate::net::server::HostState;
 
+impl Default for App {
+    fn default() -> Self {
+        Self::new_single()
+    }
+}
+
 pub enum Mode {
     Single(WritingEngine),
     Host(HostState),
@@ -11,7 +17,6 @@ pub enum Mode {
 pub struct App {
     pub should_quit: bool,
     pub mode: Mode,
-    pub day: i64,
     pub last_event: String,
     pub trigger_banner: Option<String>,
     pub trigger_banner_ticks: u32,
@@ -20,6 +25,11 @@ pub struct App {
 }
 
 impl App {
+    /// Alias for `new_single` — used by render tests imported from main.
+    pub fn new() -> Self {
+        Self::new_single()
+    }
+
     pub fn new_with_mode(mode: Mode) -> Self {
         let mut a = App::new_single();
         a.mode = mode;
@@ -30,7 +40,6 @@ impl App {
         Self {
             should_quit: false,
             mode: Mode::Single(WritingEngine::new((0, 0))),
-            day: 4380,
             last_event: String::from("type to write yourself a path"),
             trigger_banner: None,
             trigger_banner_ticks: 0,
