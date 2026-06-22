@@ -1,5 +1,6 @@
 use crate::app::App;
-use crate::game::writing::{buffer_ends_with_trigger, Direction};
+use crate::game::writing::Direction;
+use crate::theme;
 use ratatui::{
     layout::{Constraint, Direction as LayoutDirection, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -85,44 +86,17 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App) {
         Direction::Right => "→",
     };
 
-    let word = &app.writing.current_word;
-    let word_is_trigger = buffer_ends_with_trigger(word);
-    let word_color = if word_is_trigger {
-        Color::LightGreen
-    } else {
-        Color::DarkGray
-    };
-    let word_display = if word.is_empty() {
-        "—".to_string()
-    } else {
-        word.clone()
-    };
-
     let hud = Paragraph::new(Line::from(vec![
+        Span::styled("dir ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(
-            " PULL REQUEST FROM HELL ",
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            format!("{arrow} "),
+            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
         ),
         Span::raw("  "),
-        Span::styled(format!("dir {} ", arrow), Style::default().fg(Color::Yellow)),
-        Span::raw("  word: "),
-        Span::styled(word_display, Style::default().fg(word_color).add_modifier(Modifier::BOLD)),
-        Span::raw("  "),
+        Span::styled("combo ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(
-            format!("combo x{}", app.writing.combo),
-            Style::default().fg(Color::Magenta),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            format!("doubt {}", app.writing.doubt),
-            Style::default().fg(Color::DarkGray),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            format!("day {}", app.day),
-            Style::default().fg(Color::Yellow),
+            format!("x{}", app.writing.combo),
+            Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
         ),
     ]))
     .block(Block::default().borders(Borders::ALL));
@@ -226,4 +200,36 @@ fn draw_bottom(f: &mut Frame, area: Rect, app: &App) {
         .block(Block::default().borders(Borders::ALL))
         .wrap(Wrap { trim: false });
     f.render_widget(p, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn render_to_string(app: &App) -> String {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn topbar_shows_only_dir_and_combo() {
+        let app = App::new();
+        let out = render_to_string(&app);
+        // combo bleibt sichtbar ...
+        assert!(out.contains("combo"), "combo fehlt in der Topbar");
+        // ... aber der ganze Altbestand ist raus:
+        assert!(!out.contains("PULL REQUEST"), "Titel-Banner noch da");
+        assert!(!out.contains("word:"), "word-Anzeige noch in der Topbar");
+        assert!(!out.contains("doubt"), "doubt noch in der Topbar");
+        assert!(!out.contains("day"), "day noch in der Topbar");
+    }
 }

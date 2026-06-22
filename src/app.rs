@@ -3,7 +3,6 @@ use crate::game::writing::{StepResult, WritingEngine};
 pub struct App {
     pub should_quit: bool,
     pub writing: WritingEngine,
-    pub day: i64,
     pub last_event: String,
     /// Sticky trigger banner — set when a trigger fires, decremented per tick.
     pub trigger_banner: Option<String>,
@@ -17,7 +16,6 @@ impl App {
         Self {
             should_quit: false,
             writing: WritingEngine::new((0, 0)),
-            day: 4380,
             last_event: String::from("type to write yourself a path"),
             trigger_banner: None,
             trigger_banner_ticks: 0,
