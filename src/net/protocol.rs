@@ -76,7 +76,10 @@ mod tests {
         ] {
             let line = encode_line(&msg);
             assert!(line.ends_with('\n'));
-            assert!(!line.trim_end().contains('\n'), "compact RON must be single-line");
+            assert!(
+                !line.trim_end().contains('\n'),
+                "compact RON must be single-line"
+            );
             let back: ClientMsg = decode_line(&line).unwrap();
             assert_eq!(msg, back);
         }
@@ -86,7 +89,12 @@ mod tests {
     fn server_msg_wrote_roundtrip() {
         let msg = ServerMsg::Wrote {
             id: 2,
-            tile: Tile { pos: (4, 1), ch: 'q', tick: 9, glow: 0 },
+            tile: Tile {
+                pos: (4, 1),
+                ch: 'q',
+                tick: 9,
+                glow: 0,
+            },
             cursor: (5, 1),
             direction: Direction::Down,
             glow_len: 0,

@@ -7,10 +7,18 @@ fn typing_up_in_world_mode_changes_direction_immediately() {
     assert_eq!(app.local_engine().unwrap().direction, Direction::Right);
 
     app.on_char('u');
-    assert_eq!(app.local_engine().unwrap().direction, Direction::Right, "after 'u' still right");
+    assert_eq!(
+        app.local_engine().unwrap().direction,
+        Direction::Right,
+        "after 'u' still right"
+    );
 
     app.on_char('p');
-    assert_eq!(app.local_engine().unwrap().direction, Direction::Up, "after 'p' direction should be Up");
+    assert_eq!(
+        app.local_engine().unwrap().direction,
+        Direction::Up,
+        "after 'p' direction should be Up"
+    );
     assert!(
         app.trigger_banner.is_some(),
         "trigger banner should be set after firing"
@@ -59,7 +67,11 @@ fn space_does_nothing() {
     let before_cursor = app.local_engine().unwrap().cursor;
     let before_trail = app.local_engine().unwrap().trail.len();
     app.on_char(' ');
-    assert_eq!(app.local_engine().unwrap().cursor, before_cursor, "space must not move cursor");
+    assert_eq!(
+        app.local_engine().unwrap().cursor,
+        before_cursor,
+        "space must not move cursor"
+    );
     assert_eq!(
         app.local_engine().unwrap().trail.len(),
         before_trail,

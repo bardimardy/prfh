@@ -98,34 +98,62 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App) {
 
     let (word_display, word_is_trigger, combo, doubt) = match app.local_engine() {
         Some(e) => (
-            if e.current_word.is_empty() { "—".to_string() } else { e.current_word.clone() },
+            if e.current_word.is_empty() {
+                "—".to_string()
+            } else {
+                e.current_word.clone()
+            },
             buffer_ends_with_trigger(&e.current_word),
             e.combo,
             e.doubt,
         ),
         None => ("—".to_string(), false, 0, 0),
     };
-    let word_color = if word_is_trigger { Color::LightGreen } else { Color::DarkGray };
+    let word_color = if word_is_trigger {
+        Color::LightGreen
+    } else {
+        Color::DarkGray
+    };
 
     let hud = Paragraph::new(Line::from(vec![
-        Span::styled(" PULL REQUEST FROM HELL ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " PULL REQUEST FROM HELL ",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  "),
-        Span::styled(format!("dir {} ", arrow), Style::default().fg(Color::Yellow)),
+        Span::styled(
+            format!("dir {} ", arrow),
+            Style::default().fg(Color::Yellow),
+        ),
         Span::raw("  word: "),
-        Span::styled(word_display, Style::default().fg(word_color).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            word_display,
+            Style::default().fg(word_color).add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  "),
-        Span::styled(format!("combo x{}", combo), Style::default().fg(Color::Magenta)),
+        Span::styled(
+            format!("combo x{}", combo),
+            Style::default().fg(Color::Magenta),
+        ),
         Span::raw("  "),
-        Span::styled(format!("doubt {}", doubt), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            format!("doubt {}", doubt),
+            Style::default().fg(Color::DarkGray),
+        ),
         Span::raw("  "),
-        Span::styled(format!("day {}", app.day), Style::default().fg(Color::Yellow)),
+        Span::styled(
+            format!("day {}", app.day),
+            Style::default().fg(Color::Yellow),
+        ),
     ]))
     .block(Block::default().borders(Borders::ALL));
     f.render_widget(hud, area);
 }
 
 fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
-    let block = Block::default().borders(Borders::ALL).title(" /work/repo/career.md ");
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" /work/repo/career.md ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -158,14 +186,21 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
                 continue;
             }
             let style = if tile.glow > 0 {
-                Style::default().fg(Color::LightYellow).bg(Color::DarkGray).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::LightYellow)
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 let age = now.saturating_sub(tile.tick);
                 let b = MAX_BRIGHTNESS
                     .saturating_sub(age.saturating_mul(FADE_PER_TICK))
                     .max(MIN_BRIGHTNESS);
                 let scale = |c: u8| ((c as u64 * b) / MAX_BRIGHTNESS).min(255) as u8;
-                Style::default().fg(Color::Rgb(scale(player.color.r), scale(player.color.g), scale(player.color.b)))
+                Style::default().fg(Color::Rgb(
+                    scale(player.color.r),
+                    scale(player.color.g),
+                    scale(player.color.b),
+                ))
             };
             grid[ry as usize][rx as usize] = Some((tile.ch, style));
         }
@@ -185,7 +220,10 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
             Direction::Right => '▶',
         };
         let style = if player.is_self {
-            Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
                 .fg(Color::Rgb(player.color.r, player.color.g, player.color.b))
@@ -217,24 +255,34 @@ fn draw_bottom(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
         .players
         .iter()
         .flat_map(|p| {
-            let label = if p.is_self { format!("{}(du)", p.name) } else { p.name.clone() };
-            vec![
-                Span::styled(
-                    format!("{} ", label),
-                    Style::default().fg(Color::Rgb(p.color.r, p.color.g, p.color.b)).add_modifier(Modifier::BOLD),
-                ),
-            ]
+            let label = if p.is_self {
+                format!("{}(du)", p.name)
+            } else {
+                p.name.clone()
+            };
+            vec![Span::styled(
+                format!("{} ", label),
+                Style::default()
+                    .fg(Color::Rgb(p.color.r, p.color.g, p.color.b))
+                    .add_modifier(Modifier::BOLD),
+            )]
         })
         .collect();
 
     let inner_lines = vec![
         Line::from(roster),
-        Line::from(Span::styled(app.last_event.as_str(), Style::default().fg(Color::DarkGray))),
+        Line::from(Span::styled(
+            app.last_event.as_str(),
+            Style::default().fg(Color::DarkGray),
+        )),
         Line::from(vec![
             Span::styled("[Esc]", Style::default().fg(Color::Cyan)),
             Span::raw(" quit  "),
             Span::raw("triggers: "),
-            Span::styled("up down left right back stop", Style::default().fg(Color::Yellow)),
+            Span::styled(
+                "up down left right back stop",
+                Style::default().fg(Color::Yellow),
+            ),
         ]),
     ];
 

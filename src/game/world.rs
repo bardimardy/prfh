@@ -16,12 +16,36 @@ pub struct PlayerColor {
 }
 
 pub const PALETTE: [PlayerColor; MAX_PLAYERS] = [
-    PlayerColor { r: 90, g: 220, b: 120 },
-    PlayerColor { r: 90, g: 200, b: 230 },
-    PlayerColor { r: 220, g: 110, b: 210 },
-    PlayerColor { r: 235, g: 210, b: 90 },
-    PlayerColor { r: 120, g: 150, b: 245 },
-    PlayerColor { r: 235, g: 100, b: 100 },
+    PlayerColor {
+        r: 90,
+        g: 220,
+        b: 120,
+    },
+    PlayerColor {
+        r: 90,
+        g: 200,
+        b: 230,
+    },
+    PlayerColor {
+        r: 220,
+        g: 110,
+        b: 210,
+    },
+    PlayerColor {
+        r: 235,
+        g: 210,
+        b: 90,
+    },
+    PlayerColor {
+        r: 120,
+        g: 150,
+        b: 245,
+    },
+    PlayerColor {
+        r: 235,
+        g: 100,
+        b: 100,
+    },
 ];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,7 +87,10 @@ pub struct WorldView {
 
 impl WorldView {
     pub fn new(self_id: PlayerId) -> Self {
-        Self { players: Vec::new(), self_id }
+        Self {
+            players: Vec::new(),
+            self_id,
+        }
     }
 
     pub fn player_mut(&mut self, id: PlayerId) -> Option<&mut PlayerView> {
@@ -85,7 +112,9 @@ impl WorldView {
     /// `Welcome` and `Reject` are handled at connect time, not here.
     pub fn apply(&mut self, msg: ServerMsg) {
         match msg {
-            ServerMsg::Welcome { your_id, players, .. } => {
+            ServerMsg::Welcome {
+                your_id, players, ..
+            } => {
                 self.self_id = your_id;
                 self.players = players
                     .into_iter()
@@ -116,7 +145,13 @@ impl WorldView {
             ServerMsg::PlayerLeft { id } => {
                 self.players.retain(|p| p.id != id);
             }
-            ServerMsg::Wrote { id, tile, cursor, direction, glow_len } => {
+            ServerMsg::Wrote {
+                id,
+                tile,
+                cursor,
+                direction,
+                glow_len,
+            } => {
                 if let Some(p) = self.player_mut(id) {
                     p.push_tile(tile);
                     p.cursor = cursor;
@@ -162,7 +197,12 @@ mod tests {
         let mut w = view_with_one_player();
         let p = w.player_mut(1).unwrap();
         for i in 0..(TRAIL_CAP + 5) {
-            p.push_tile(Tile { pos: (i as i32, 0), ch: 'a', tick: i as u64, glow: 0 });
+            p.push_tile(Tile {
+                pos: (i as i32, 0),
+                ch: 'a',
+                tick: i as u64,
+                glow: 0,
+            });
         }
         assert_eq!(p.trail.len(), TRAIL_CAP);
         // Oldest dropped: first remaining tile is the 5th pushed.
@@ -172,7 +212,12 @@ mod tests {
     #[test]
     fn tick_visuals_decrements_glow_to_zero() {
         let mut w = view_with_one_player();
-        w.player_mut(1).unwrap().push_tile(Tile { pos: (0, 0), ch: 'x', tick: 0, glow: GLOW_TICKS });
+        w.player_mut(1).unwrap().push_tile(Tile {
+            pos: (0, 0),
+            ch: 'x',
+            tick: 0,
+            glow: GLOW_TICKS,
+        });
         w.tick_visuals();
         assert_eq!(w.players[0].trail[0].glow, GLOW_TICKS - 1);
         for _ in 0..GLOW_TICKS + 5 {
@@ -208,14 +253,24 @@ mod tests {
         let mut w = view_with_one_player(); // self_id = 1, player 1
         w.apply(ServerMsg::Wrote {
             id: 1,
-            tile: Tile { pos: (0, 0), ch: 'u', tick: 0, glow: 0 },
+            tile: Tile {
+                pos: (0, 0),
+                ch: 'u',
+                tick: 0,
+                glow: 0,
+            },
             cursor: (1, 0),
             direction: Direction::Right,
             glow_len: 0,
         });
         w.apply(ServerMsg::Wrote {
             id: 1,
-            tile: Tile { pos: (1, 0), ch: 'p', tick: 1, glow: 0 },
+            tile: Tile {
+                pos: (1, 0),
+                ch: 'p',
+                tick: 1,
+                glow: 0,
+            },
             cursor: (2, 0),
             direction: Direction::Up,
             glow_len: 2, // trigger fired: last two tiles glow
@@ -232,8 +287,16 @@ mod tests {
     fn apply_erased_pops_tile() {
         use crate::net::protocol::ServerMsg;
         let mut w = view_with_one_player();
-        w.player_mut(1).unwrap().push_tile(Tile { pos: (0, 0), ch: 'a', tick: 0, glow: 0 });
-        w.apply(ServerMsg::Erased { id: 1, cursor: (0, 0) });
+        w.player_mut(1).unwrap().push_tile(Tile {
+            pos: (0, 0),
+            ch: 'a',
+            tick: 0,
+            glow: 0,
+        });
+        w.apply(ServerMsg::Erased {
+            id: 1,
+            cursor: (0, 0),
+        });
         assert!(w.players[0].trail.is_empty());
         assert_eq!(w.players[0].cursor, (0, 0));
     }

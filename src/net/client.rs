@@ -25,7 +25,12 @@ impl ClientHandle {
 pub fn connect(addr: &str, name: &str) -> Result<(WorldView, ClientHandle)> {
     let stream = TcpStream::connect(addr)?;
     let mut write = stream.try_clone()?;
-    write.write_all(encode_line(&ClientMsg::Hello { name: name.to_string() }).as_bytes())?;
+    write.write_all(
+        encode_line(&ClientMsg::Hello {
+            name: name.to_string(),
+        })
+        .as_bytes(),
+    )?;
 
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
@@ -33,9 +38,17 @@ pub fn connect(addr: &str, name: &str) -> Result<(WorldView, ClientHandle)> {
         return Err(anyhow!("Verbindung vom Host geschlossen"));
     }
     let mut world = match decode_line::<ServerMsg>(&line)? {
-        ServerMsg::Welcome { your_id, color, players } => {
+        ServerMsg::Welcome {
+            your_id,
+            color,
+            players,
+        } => {
             let mut w = WorldView::new(your_id);
-            w.apply(ServerMsg::Welcome { your_id, color, players });
+            w.apply(ServerMsg::Welcome {
+                your_id,
+                color,
+                players,
+            });
             w
         }
         ServerMsg::Reject { reason } => return Err(anyhow!(reason)),

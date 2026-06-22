@@ -12,9 +12,18 @@ use crate::game::writing::{StepResult, WritingEngine, GLOW_TICKS};
 use crate::net::protocol::{decode_line, ClientMsg, InputEvent, ServerMsg};
 
 pub enum HostEvent {
-    Hello { conn_id: u64, name: String, write: TcpStream },
-    Input { conn_id: u64, ev: InputEvent },
-    Disconnected { conn_id: u64 },
+    Hello {
+        conn_id: u64,
+        name: String,
+        write: TcpStream,
+    },
+    Input {
+        conn_id: u64,
+        ev: InputEvent,
+    },
+    Disconnected {
+        conn_id: u64,
+    },
 }
 
 /// Spawn the accept loop. Each accepted connection gets a reader thread that
@@ -48,7 +57,14 @@ fn reader_loop(conn_id: u64, stream: TcpStream, tx: Sender<HostEvent>) {
     }
     match decode_line::<ClientMsg>(&line) {
         Ok(ClientMsg::Hello { name }) => {
-            if tx.send(HostEvent::Hello { conn_id, name, write }).is_err() {
+            if tx
+                .send(HostEvent::Hello {
+                    conn_id,
+                    name,
+                    write,
+                })
+                .is_err()
+            {
                 return;
             }
         }
@@ -103,7 +119,11 @@ pub struct HostState {
 
 impl HostState {
     pub fn new(host_name: String) -> Self {
-        let mut s = Self { players: BTreeMap::new(), next_id: 0, join_seq: 0 };
+        let mut s = Self {
+            players: BTreeMap::new(),
+            next_id: 0,
+            join_seq: 0,
+        };
         // Host always exists as id 0, color index 0, spawn (0,0).
         s.insert_player(HOST_ID, 0, host_name);
         s.next_id = 1;
@@ -116,7 +136,11 @@ impl HostState {
         let spawn = (seq * 12, seq * 4);
         self.players.insert(
             id,
-            Player { engine: WritingEngine::new(spawn), color_idx, name },
+            Player {
+                engine: WritingEngine::new(spawn),
+                color_idx,
+                name,
+            },
         );
     }
 
@@ -132,16 +156,27 @@ impl HostState {
         self.next_id += 1;
         self.insert_player(id, color_idx, name.clone());
         let color = PALETTE[color_idx];
-        let welcome = ServerMsg::Welcome { your_id: id, color, players: self.snapshot() };
+        let welcome = ServerMsg::Welcome {
+            your_id: id,
+            color,
+            players: self.snapshot(),
+        };
         let joined = ServerMsg::PlayerJoined { id, color, name };
-        Ok(JoinOutcome { id, color, welcome, joined })
+        Ok(JoinOutcome {
+            id,
+            color,
+            welcome,
+            joined,
+        })
     }
 
     pub fn remove_player(&mut self, id: PlayerId) -> Option<ServerMsg> {
         if id == HOST_ID {
             return None; // host leaving ends the session elsewhere
         }
-        self.players.remove(&id).map(|_| ServerMsg::PlayerLeft { id })
+        self.players
+            .remove(&id)
+            .map(|_| ServerMsg::PlayerLeft { id })
     }
 
     pub fn apply_input(&mut self, id: PlayerId, ev: InputEvent) -> Option<ServerMsg> {
@@ -158,7 +193,8 @@ impl HostState {
                         .rev()
                         .take_while(|t| t.glow == GLOW_TICKS)
                         .count()
-                        .min(u8::MAX as usize) as u8,
+                        .min(u8::MAX as usize)
+                        as u8,
                     _ => 0,
                 };
                 Some(ServerMsg::Wrote {
@@ -171,7 +207,10 @@ impl HostState {
             }
             InputEvent::Backspace => {
                 player.engine.on_backspace();
-                Some(ServerMsg::Erased { id, cursor: player.engine.cursor })
+                Some(ServerMsg::Erased {
+                    id,
+                    cursor: player.engine.cursor,
+                })
             }
         }
     }
@@ -210,7 +249,10 @@ impl HostState {
                 is_self: *id == HOST_ID,
             })
             .collect();
-        WorldView { players, self_id: HOST_ID }
+        WorldView {
+            players,
+            self_id: HOST_ID,
+        }
     }
 
     pub fn self_id(&self) -> PlayerId {
@@ -284,7 +326,11 @@ mod tests {
         s.apply_input(HOST_ID, InputEvent::Char('u')).unwrap();
         let msg = s.apply_input(HOST_ID, InputEvent::Char('p')).unwrap();
         match msg {
-            ServerMsg::Wrote { glow_len, direction, .. } => {
+            ServerMsg::Wrote {
+                glow_len,
+                direction,
+                ..
+            } => {
                 assert_eq!(direction, Direction::Up);
                 assert_eq!(glow_len, 2);
             }

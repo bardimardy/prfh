@@ -21,7 +21,9 @@ fn client_hello_gets_welcome() {
     // Host receives Hello, assigns a player, replies Welcome.
     let event = rx.recv().unwrap();
     match event {
-        HostEvent::Hello { name, mut write, .. } => {
+        HostEvent::Hello {
+            name, mut write, ..
+        } => {
             assert_eq!(name, "Bob");
             let outcome = host.add_player(name).unwrap();
             write

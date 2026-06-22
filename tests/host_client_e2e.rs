@@ -24,7 +24,11 @@ fn client_sees_host_keystroke() {
         while Instant::now() < deadline {
             while let Ok(ev) = rx.try_recv() {
                 match ev {
-                    HostEvent::Hello { conn_id, name, mut write } => {
+                    HostEvent::Hello {
+                        conn_id,
+                        name,
+                        mut write,
+                    } => {
                         let outcome = host.add_player(name).unwrap();
                         send_msg(&mut write, &outcome.welcome).unwrap();
                         conn_player.insert(conn_id, outcome.id);

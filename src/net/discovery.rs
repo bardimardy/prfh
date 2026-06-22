@@ -68,7 +68,11 @@ pub fn merge_announce(entries: &mut Vec<LobbyEntry>, addr: IpAddr, a: Announce) 
         e.name = a.name;
         e.tcp_port = a.tcp_port;
     } else {
-        entries.push(LobbyEntry { addr, name: a.name, tcp_port: a.tcp_port });
+        entries.push(LobbyEntry {
+            addr,
+            name: a.name,
+            tcp_port: a.tcp_port,
+        });
     }
 }
 
@@ -79,7 +83,10 @@ mod tests {
 
     #[test]
     fn announce_ron_roundtrip() {
-        let a = Announce { name: "Hostspiel".into(), tcp_port: TCP_PORT };
+        let a = Announce {
+            name: "Hostspiel".into(),
+            tcp_port: TCP_PORT,
+        };
         let s = ron::to_string(&a).unwrap();
         let back: Announce = ron::from_str(&s).unwrap();
         assert_eq!(a, back);
@@ -89,8 +96,22 @@ mod tests {
     fn merge_dedups_by_ip() {
         let ip: IpAddr = Ipv4Addr::new(192, 168, 1, 5).into();
         let mut v = Vec::new();
-        merge_announce(&mut v, ip, Announce { name: "A".into(), tcp_port: 7777 });
-        merge_announce(&mut v, ip, Announce { name: "A2".into(), tcp_port: 7777 });
+        merge_announce(
+            &mut v,
+            ip,
+            Announce {
+                name: "A".into(),
+                tcp_port: 7777,
+            },
+        );
+        merge_announce(
+            &mut v,
+            ip,
+            Announce {
+                name: "A2".into(),
+                tcp_port: 7777,
+            },
+        );
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].name, "A2");
     }
@@ -98,8 +119,22 @@ mod tests {
     #[test]
     fn merge_keeps_distinct_ips() {
         let mut v = Vec::new();
-        merge_announce(&mut v, Ipv4Addr::new(192, 168, 1, 5).into(), Announce { name: "A".into(), tcp_port: 7777 });
-        merge_announce(&mut v, Ipv4Addr::new(192, 168, 1, 6).into(), Announce { name: "B".into(), tcp_port: 7777 });
+        merge_announce(
+            &mut v,
+            Ipv4Addr::new(192, 168, 1, 5).into(),
+            Announce {
+                name: "A".into(),
+                tcp_port: 7777,
+            },
+        );
+        merge_announce(
+            &mut v,
+            Ipv4Addr::new(192, 168, 1, 6).into(),
+            Announce {
+                name: "B".into(),
+                tcp_port: 7777,
+            },
+        );
         assert_eq!(v.len(), 2);
     }
 }

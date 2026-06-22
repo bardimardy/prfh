@@ -446,7 +446,12 @@ mod tests {
 
     #[test]
     fn tile_and_direction_ron_roundtrip() {
-        let t = Tile { pos: (3, -2), ch: 'x', tick: 7, glow: GLOW_TICKS };
+        let t = Tile {
+            pos: (3, -2),
+            ch: 'x',
+            tick: 7,
+            glow: GLOW_TICKS,
+        };
         let s = ron::to_string(&t).unwrap();
         let back: Tile = ron::from_str(&s).unwrap();
         assert_eq!(t, back);

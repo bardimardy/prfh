@@ -30,13 +30,24 @@ fn parse_cli() -> Cli {
         Some("host") => Cli::Host {
             name: {
                 let n = name_of(&args);
-                if n.is_empty() { "Host".into() } else { n }
+                if n.is_empty() {
+                    "Host".into()
+                } else {
+                    n
+                }
             },
         },
         Some("join") => {
             let addr = args.get(1).filter(|a| !a.starts_with("--")).cloned();
             let name = name_of(&args);
-            Cli::Join { addr, name: if name.is_empty() { "Player".into() } else { name } }
+            Cli::Join {
+                addr,
+                name: if name.is_empty() {
+                    "Player".into()
+                } else {
+                    name
+                },
+            }
         }
         _ => Cli::Single,
     }
@@ -129,7 +140,11 @@ fn run_client<B: ratatui::backend::Backend>(
         }
     };
 
-    let name = if name.is_empty() { "Player".into() } else { name };
+    let name = if name.is_empty() {
+        "Player".into()
+    } else {
+        name
+    };
     let (world, mut handle) = connect(&target, &name)?;
     let mut app = App::new_with_mode(Mode::Client(world));
     app.debug = debug;
@@ -231,19 +246,21 @@ fn run_host<B: ratatui::backend::Backend>(
         while let Ok(ev) = rx.try_recv() {
             if let Mode::Host(h) = &mut app.mode {
                 match ev {
-                    HostEvent::Hello { conn_id, name, mut write } => {
-                        match h.add_player(name) {
-                            Ok(outcome) => {
-                                let _ = send_msg(&mut write, &outcome.welcome);
-                                conn_player.insert(conn_id, outcome.id);
-                                streams.insert(conn_id, write);
-                                broadcast(&mut streams, Some(conn_id), &outcome.joined);
-                            }
-                            Err(reason) => {
-                                let _ = send_msg(&mut write, &ServerMsg::Reject { reason });
-                            }
+                    HostEvent::Hello {
+                        conn_id,
+                        name,
+                        mut write,
+                    } => match h.add_player(name) {
+                        Ok(outcome) => {
+                            let _ = send_msg(&mut write, &outcome.welcome);
+                            conn_player.insert(conn_id, outcome.id);
+                            streams.insert(conn_id, write);
+                            broadcast(&mut streams, Some(conn_id), &outcome.joined);
                         }
-                    }
+                        Err(reason) => {
+                            let _ = send_msg(&mut write, &ServerMsg::Reject { reason });
+                        }
+                    },
                     HostEvent::Input { conn_id, ev } => {
                         if let Some(&pid) = conn_player.get(&conn_id) {
                             if let Some(msg) = h.apply_input(pid, ev) {
