@@ -54,6 +54,30 @@ IST das Gate.
   Pickup-/Wellen-Animationen (Manager als Frame-übergreifender State, `elapsed`-Messung,
   `process_effects(mgr, elapsed, f.buffer_mut(), area)` in `draw`) gehört C (#31).
 
+## Was NICHT in tachyonfx gehört: der scrollende Trail (Learning #37)
+
+Der **Trail-Fade** (kontinuierliche Transparenz älterer Zeichen + smoothes
+längenbasiertes Entfernen) ist **bewusst kein tachyonfx-Effekt**. tachyonfx-
+Effekte sind **screen-zell-/Rect-gebunden** (auch mit `CellFilter` nur über das,
+was *gerade* an einer Buffer-Position steht) und kennen **keine logische
+Zeichen-Identität**. Der Trail wird aber **cursor-zentriert gerendert und scrollt
+jeden Frame** (Welt→Screen-Remap) — ein zeitbasierter Zell-Effekt würde über
+logisch andere Zeichen **schmieren**.
+
+**Regel:** Der Trail-Fade ist **Modell-Mathematik zur Render-Zeit** —
+`trail_brightness(from_tail)` + `apply_trail_fade(&mut Vec<Tile>)` in
+`src/game/writing.rs`, geteilt von `WritingEngine::tick_visuals` (Single/Host) und
+`WorldView::tick_visuals` (Client). Brightness/Removal sind eine **reine Funktion
+der Position vom Kopf**, **lokal auf jedem Knoten** berechnet (nie idle-gekoppelt,
+nie über Netzwerk gesynct) — so faden Single und MP identisch ohne neue Messages.
+Ein idle-/age-gesyncter Ansatz (MP-Merge #26) hatte genau das gebrochen.
+
+tachyonfx bleibt für **diskrete One-Shot-Effekte** (Pickup, Welle, Glow): die
+laufen <~0.5 s, viel schneller als relevantes Scrollen → Smear vernachlässigbar.
+Brauchst du doch einen trail-artigen Effekt im Effekt-Graphen, ist `effect_fn`
+(Shader-Closure mit eigenem State pro Zelle) die einzige scroll-immune Option —
+für einen reinen Helligkeits-Gradient aber Overkill gegenüber dem Render-Lerp.
+
 ## Benannte Konstruktoren
 
 Effekte werden als benannte, fachliche Konstruktoren gekapselt (`pickup()`,
