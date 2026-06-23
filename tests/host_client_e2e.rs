@@ -59,7 +59,7 @@ fn client_sees_host_keystroke() {
         }
     });
 
-    let (world, handle): (WorldView, _) = connect(&addr.to_string(), "Bob").unwrap();
+    let (world, _arena, handle): (WorldView, _, _) = connect(&addr.to_string(), "Bob").unwrap();
     assert!(world.players.iter().any(|p| p.is_self)); // got Welcome
 
     // Wait for the host's 'h' keystroke to arrive.

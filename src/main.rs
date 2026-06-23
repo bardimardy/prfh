@@ -158,15 +158,15 @@ where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     use prfh::net::client::connect;
-    use prfh::net::protocol::InputEvent;
+    use prfh::net::protocol::{InputEvent, ServerMsg};
 
     let name = if name.is_empty() {
         "Player".into()
     } else {
         name
     };
-    let (world, mut handle) = connect(&addr, &name)?;
-    let mut app = App::new_with_mode(Mode::Client(world));
+    let (world, arena, mut handle) = connect(&addr, &name)?;
+    let mut app = App::new_with_mode(Mode::Client(world, arena));
     app.debug = debug;
     let mut last_draw = Instant::now();
 
@@ -203,8 +203,12 @@ where
         loop {
             match handle.rx.try_recv() {
                 Ok(msg) => {
-                    if let Mode::Client(w) = &mut app.mode {
-                        w.apply(msg);
+                    if let Mode::Client(w, arena) = &mut app.mode {
+                        match msg {
+                            ServerMsg::EntitySpawned { entity } => arena.apply_spawned(entity),
+                            ServerMsg::EntityDespawned { id } => arena.apply_despawned(id),
+                            other => w.apply(other),
+                        }
                     }
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,

@@ -1,4 +1,5 @@
 use crate::app::App;
+use crate::game::arena::{Arena, EntityKind};
 use crate::game::world::WorldView;
 use crate::game::writing::Direction;
 use crate::hud::{anchor_rect, Anchor};
@@ -34,7 +35,7 @@ pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
     let area = f.area();
     let world = app.world_view();
 
-    draw_world(f, area, &world);
+    draw_world(f, area, &world, app.arena());
     draw_hud(f, area, app, &world);
 
     // Notifications oben-mitte, über der Welt (mutabel: halten ihre Effekte).
@@ -194,7 +195,7 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
 
 /// Frameless Welt: füllt `area` komplett, cursor-zentriert. Kein Rahmen, kein
 /// Titel — die HUD-Overlays liegen darüber.
-fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
+fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena) {
     let w = area.width as i32;
     let h = area.height as i32;
     let center = (w / 2, h / 2);
@@ -203,6 +204,21 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
     let cursor = self_player.map(|p| p.cursor).unwrap_or((0, 0));
 
     let mut grid: Vec<Vec<Option<(char, Style)>>> = vec![vec![None; w as usize]; h as usize];
+
+    // Entitäten zuerst zeichnen (Trails liegen optisch darüber). Dieselbe
+    // cursor-zentrierte Transform wie die Tiles. Dezentes Ghost-Styling
+    // (genaues Look&Feel: W3).
+    for e in &arena.entities {
+        let rx = e.pos.0 - cursor.0 + center.0;
+        let ry = e.pos.1 - cursor.1 + center.1;
+        if rx < 0 || ry < 0 || rx >= w || ry >= h {
+            continue;
+        }
+        let ch = match &e.kind {
+            EntityKind::PowerupWord(pw) => pw.word.chars().next().unwrap_or('◆'),
+        };
+        grid[ry as usize][rx as usize] = Some((ch, Style::default().fg(theme::TEXT_DIM)));
+    }
 
     // Alle Tiles aller Spieler nach tick sortieren, damit das zuletzt
     // geschriebene Tile an jeder Zelle gewinnt (fixt Host-vs-Client-Reihenfolge).
@@ -307,6 +323,28 @@ mod tests {
             .iter()
             .map(|c| c.symbol())
             .collect()
+    }
+
+    #[test]
+    fn draw_world_renders_arena_entity_at_expected_cell() {
+        use crate::game::arena::{EntityKind, PowerupWord};
+        let mut app = App::new();
+        // Offset vom Cursor (0,0), damit der Cursor-Marker die Entität nicht
+        // überdeckt. 'z' kommt im HUD nicht vor → eindeutiger Treffer.
+        app.arena_mut().unwrap().spawn(
+            (5, -2),
+            EntityKind::PowerupWord(PowerupWord { word: "zoom".into() }),
+        );
+        // Screen-Transform: (5,-2) - cursor(0,0) + center(40,12) = (45,10).
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        let buf = terminal.backend().buffer();
+        assert_eq!(
+            buf.cell((45, 10)).unwrap().symbol(),
+            "z",
+            "Powerup-Entität sollte bei (45,10) als 'z' gerendert werden"
+        );
     }
 
     #[test]

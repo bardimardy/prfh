@@ -1,3 +1,4 @@
+use crate::game::arena::Arena;
 use crate::game::world::{PlayerId, PlayerView, WorldView};
 use crate::game::writing::{StepResult, WritingEngine};
 use crate::hud::notify::{NotificationStack, NotifyKind};
@@ -10,9 +11,9 @@ impl Default for App {
 }
 
 pub enum Mode {
-    Single(WritingEngine),
+    Single(WritingEngine, Arena),
     Host(HostState),
-    Client(WorldView),
+    Client(WorldView, Arena),
 }
 
 pub struct App {
@@ -41,7 +42,7 @@ impl App {
     pub fn new_single() -> Self {
         Self {
             should_quit: false,
-            mode: Mode::Single(WritingEngine::new((0, 0))),
+            mode: Mode::Single(WritingEngine::new((0, 0)), Arena::new()),
             last_event: String::from("type to write yourself a path"),
             notifications: NotificationStack::new(),
             debug: false,
@@ -51,23 +52,23 @@ impl App {
 
     pub fn self_id(&self) -> PlayerId {
         match &self.mode {
-            Mode::Single(_) => 0,
+            Mode::Single(..) => 0,
             Mode::Host(h) => h.self_id(),
-            Mode::Client(w) => w.self_id,
+            Mode::Client(w, _) => w.self_id,
         }
     }
 
     pub fn local_engine(&self) -> Option<&WritingEngine> {
         match &self.mode {
-            Mode::Single(e) => Some(e),
+            Mode::Single(e, _) => Some(e),
             Mode::Host(h) => Some(h.local_engine()),
-            Mode::Client(_) => None,
+            Mode::Client(..) => None,
         }
     }
 
     pub fn world_view(&self) -> WorldView {
         match &self.mode {
-            Mode::Single(e) => WorldView {
+            Mode::Single(e, _) => WorldView {
                 self_id: 0,
                 players: vec![PlayerView {
                     id: 0,
@@ -82,7 +83,26 @@ impl App {
                 }],
             },
             Mode::Host(h) => h.world_view(),
-            Mode::Client(w) => w.clone(),
+            Mode::Client(w, _) => w.clone(),
+        }
+    }
+
+    /// Aktuelle Sim-Arena fürs Rendering (analog zu `world_view`).
+    pub fn arena(&self) -> &Arena {
+        match &self.mode {
+            Mode::Single(_, a) => a,
+            Mode::Host(h) => h.arena(),
+            Mode::Client(_, a) => a,
+        }
+    }
+
+    /// Mutabler Zugriff auf die lokal gehaltene Arena (Single/Client). Host
+    /// mutiert seine Arena über `HostState`. Skeleton-Hook: W2 befüllt die
+    /// Single-Arena, W3 verdrahtet Pickup/Despawn.
+    pub fn arena_mut(&mut self) -> Option<&mut Arena> {
+        match &mut self.mode {
+            Mode::Single(_, a) | Mode::Client(_, a) => Some(a),
+            Mode::Host(_) => None,
         }
     }
 
@@ -99,11 +119,11 @@ impl App {
         // Notifications werden zeitbasiert im Render (mit Frame-`elapsed`)
         // getrieben, nicht hier — `tick` ist frame-/visual-State.
         match &mut self.mode {
-            Mode::Single(e) => e.tick_visuals(),
+            Mode::Single(e, _) => e.tick_visuals(),
             // Host tick_visuals is driven by run_host (which also broadcasts
             // the returned Respawned messages), so we skip it here.
             Mode::Host(_) => {}
-            Mode::Client(w) => w.tick_visuals(),
+            Mode::Client(w, _) => w.tick_visuals(),
         }
     }
 
@@ -112,7 +132,7 @@ impl App {
         if c == ' ' {
             return;
         }
-        if let Mode::Single(e) = &mut self.mode {
+        if let Mode::Single(e, _) = &mut self.mode {
             let result = e.on_char(c);
             self.last_event = match &result {
                 StepResult::Wrote(_) => format!("wrote '{}'", c),
@@ -135,7 +155,7 @@ impl App {
     }
 
     pub fn on_backspace(&mut self) {
-        if let Mode::Single(e) = &mut self.mode {
+        if let Mode::Single(e, _) = &mut self.mode {
             e.on_backspace();
             self.last_event = format!("walked back. doubt: {}", e.doubt);
         }
