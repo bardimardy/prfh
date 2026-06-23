@@ -99,7 +99,10 @@ impl WorldView {
         self.players.iter_mut().find(|p| p.id == id)
     }
 
-    /// Decrement glow on every tile of every player (called once per frame).
+    /// Per-frame visual tick: decrement glow, then apply the same positional
+    /// fade gradient + length trim as the single-player engine. Brightness and
+    /// removal are derived locally from each player's ordered trail, so the
+    /// client fades and trims without any extra network messages.
     pub fn tick_visuals(&mut self) {
         for p in &mut self.players {
             for t in &mut p.trail {
@@ -107,6 +110,7 @@ impl WorldView {
                     t.glow -= 1;
                 }
             }
+            crate::game::writing::apply_trail_fade(&mut p.trail);
         }
     }
 
@@ -323,6 +327,31 @@ mod tests {
         });
         assert!(w.players[0].trail.is_empty());
         assert_eq!(w.players[0].cursor, (0, 0));
+    }
+
+    #[test]
+    fn tick_visuals_fades_and_trims_trail_locally() {
+        use crate::game::writing::{TILE_MAX_BRIGHTNESS, TRAIL_VISIBLE};
+        let mut w = view_with_one_player();
+        {
+            let p = w.player_mut(1).unwrap();
+            for i in 0..(TRAIL_VISIBLE + 30) {
+                p.push_tile(Tile {
+                    pos: (i as i32, 0),
+                    ch: 'a',
+                    tick: i as u64,
+                    glow: 0,
+                    brightness: TILE_MAX_BRIGHTNESS,
+                });
+            }
+        }
+        w.tick_visuals();
+        let p = &w.players[0];
+        // Client trims to the visible window with no network removal message.
+        assert_eq!(p.trail.len(), TRAIL_VISIBLE);
+        // And the multiplayer trail now actually fades.
+        assert_eq!(p.trail.last().unwrap().brightness, TILE_MAX_BRIGHTNESS);
+        assert!(p.trail.first().unwrap().brightness < TILE_MAX_BRIGHTNESS);
     }
 
     #[test]

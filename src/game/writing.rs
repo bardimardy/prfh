@@ -79,8 +79,13 @@ pub fn buffer_ends_with_trigger(word: &str) -> bool {
 /// Initial brightness of a freshly written tile.
 pub const TILE_MAX_BRIGHTNESS: u8 = 200;
 
-/// Number of most-recent tiles that are always kept at full brightness.
-pub const TRAIL_SAFE_ZONE: usize = 75;
+/// Newest tiles kept at full brightness — the bright "head" near the cursor.
+pub const TRAIL_SAFE: usize = 10;
+/// Tiles behind the head over which brightness ramps linearly from full to ~0.
+pub const TRAIL_FADE: usize = 60;
+/// Total visible trail length. Older tiles are dropped — they are already at
+/// ~0 brightness, so the removal reads as a smooth disappearance.
+pub const TRAIL_VISIBLE: usize = TRAIL_SAFE + TRAIL_FADE;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tile {
@@ -97,16 +102,36 @@ pub struct Tile {
 /// How many ticks a trigger-tile glows after firing.
 pub const GLOW_TICKS: u32 = 30;
 
-/// Derive a per-frame brightness decrease based on how long the player has
-/// been idle (in render frames, ~60 fps).
-///   0–3 frames (< ~50ms): 0  — just typed, no fade
-///   4–63 frames (~65ms–1s):  single linear ramp 3..40
-///   64+ frames (> 1s):   40  — peak (~5 frames to disappear)
-fn fade_rate(idle_frames: u32) -> u8 {
-    match idle_frames {
-        0..=3 => 0,
-        4..=63 => 3 + ((idle_frames - 4) * 37 / 59).min(37) as u8,
-        _ => 40,
+/// Brightness for a tile `from_tail` positions behind the newest (0 = newest),
+/// as a pure function of position — independent of idle time. This is what
+/// gives the trail its continuous transparency gradient *while* writing.
+pub fn trail_brightness(from_tail: usize) -> u8 {
+    if from_tail < TRAIL_SAFE {
+        return TILE_MAX_BRIGHTNESS;
+    }
+    let into_fade = from_tail - TRAIL_SAFE;
+    if into_fade >= TRAIL_FADE {
+        return 0;
+    }
+    // Linear ramp: just below full right behind the head, ~0 at the visible
+    // edge. Dividing by `TRAIL_FADE + 1` keeps the first fade tile strictly
+    // dimmer than the head, so the gradient is continuous.
+    let remaining = TRAIL_FADE - into_fade; // TRAIL_FADE ..= 1
+    ((TILE_MAX_BRIGHTNESS as usize * remaining) / (TRAIL_FADE + 1)) as u8
+}
+
+/// Apply the positional brightness gradient and trim the trail to
+/// `TRAIL_VISIBLE`. Shared by single-player (`WritingEngine`) and multiplayer
+/// (`WorldView`) so both fade and self-trim identically and *locally* — no
+/// network sync of brightness or removals is needed.
+pub fn apply_trail_fade(trail: &mut Vec<Tile>) {
+    let len = trail.len();
+    if len > TRAIL_VISIBLE {
+        trail.drain(0..len - TRAIL_VISIBLE);
+    }
+    let len = trail.len();
+    for (i, t) in trail.iter_mut().enumerate() {
+        t.brightness = trail_brightness(len - 1 - i);
     }
 }
 
@@ -121,8 +146,6 @@ pub struct WritingEngine {
     pub paused: bool,
     /// Monotonically increasing tick counter, advanced on every char write.
     pub tick: u64,
-    /// Render frames elapsed since the last on_char call. Drives fade speed.
-    pub idle_frames: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,39 +167,24 @@ impl WritingEngine {
             doubt: 0,
             paused: false,
             tick: 0,
-            idle_frames: 0,
         }
     }
 
-    /// Render-time tick: decrement glow, fade old tiles, remove invisible ones.
-    /// Called once per frame from the app loop, regardless of input.
+    /// Render-time tick: decrement glow, apply the positional fade gradient and
+    /// trim the trail. Called once per frame from the app loop, regardless of
+    /// input — the gradient is purely positional, so it shows while writing.
     pub fn tick_visuals(&mut self) {
-        self.idle_frames = self.idle_frames.saturating_add(1);
-        let rate = fade_rate(self.idle_frames);
-
-        let safe = TRAIL_SAFE_ZONE;
-        let len = self.trail.len();
-
-        for (i, t) in self.trail.iter_mut().enumerate() {
+        for t in &mut self.trail {
             if t.glow > 0 {
                 t.glow -= 1;
             }
-            // Tiles inside the safe zone keep full brightness.
-            if i + safe >= len {
-                t.brightness = TILE_MAX_BRIGHTNESS;
-            } else {
-                t.brightness = t.brightness.saturating_sub(rate);
-            }
         }
-
-        // Remove tiles that have fully faded (brightness == 0).
-        self.trail.retain(|t| t.brightness > 0);
+        apply_trail_fade(&mut self.trail);
     }
 
     pub fn on_char(&mut self, ch: char) -> StepResult {
         let is_boundary = ch.is_whitespace() || matches!(ch, '.' | ',' | '!' | '?' | ';' | ':');
 
-        self.idle_frames = 0;
         let tile = Tile {
             pos: self.cursor,
             ch,
@@ -505,40 +513,64 @@ mod tests {
     }
 
     #[test]
-    fn safe_zone_tiles_never_fade() {
-        let mut e = WritingEngine::new((0, 0));
-        // Write exactly TRAIL_SAFE_ZONE tiles.
-        for ch in ('a'..='z').cycle().take(TRAIL_SAFE_ZONE) {
-            e.on_char(ch);
+    fn trail_brightness_is_positional_full_head_then_monotonic_ramp() {
+        // The bright head stays full.
+        assert_eq!(trail_brightness(0), TILE_MAX_BRIGHTNESS);
+        assert_eq!(trail_brightness(TRAIL_SAFE - 1), TILE_MAX_BRIGHTNESS);
+        // Right behind the head it has started to dim, but is still visible.
+        assert!(trail_brightness(TRAIL_SAFE) < TILE_MAX_BRIGHTNESS);
+        assert!(trail_brightness(TRAIL_SAFE) > 0);
+        // Non-increasing with age across the whole visible window.
+        let mut prev = trail_brightness(0);
+        for ft in 1..TRAIL_VISIBLE {
+            let b = trail_brightness(ft);
+            assert!(b <= prev, "brightness must not increase with age");
+            prev = b;
         }
-        // Simulate many idle frames (fast fade rate).
-        for _ in 0..200 {
-            e.tick_visuals();
-        }
-        // All tiles are in the safe zone — none should have been removed.
-        assert_eq!(e.trail.len(), TRAIL_SAFE_ZONE);
-        // And all should be at max brightness.
-        assert!(e.trail.iter().all(|t| t.brightness == TILE_MAX_BRIGHTNESS));
+        // Beyond the visible window: fully gone.
+        assert_eq!(trail_brightness(TRAIL_VISIBLE), 0);
     }
 
     #[test]
-    fn tiles_outside_safe_zone_fade_and_are_removed() {
+    fn fade_applies_during_active_typing_not_just_idle() {
+        // Regression: the gradient must be visible right after writing, with NO
+        // idle accumulation (a single tick is one render frame).
         let mut e = WritingEngine::new((0, 0));
-        // Write enough tiles so the first ones are outside the safe zone.
-        for ch in ('a'..='z').cycle().take(TRAIL_SAFE_ZONE + 10) {
+        for ch in ('a'..='z').cycle().take(TRAIL_SAFE + 20) {
             e.on_char(ch);
         }
-        let initial_len = e.trail.len();
-        // Trigger fast fade: many idle frames.
-        for _ in 0..300 {
-            e.tick_visuals();
+        e.tick_visuals();
+        let newest = e.trail.last().unwrap().brightness;
+        let oldest = e.trail.first().unwrap().brightness;
+        assert_eq!(newest, TILE_MAX_BRIGHTNESS);
+        assert!(oldest < newest, "older tiles must be dimmer immediately");
+    }
+
+    #[test]
+    fn trail_self_trims_to_visible_length() {
+        let mut e = WritingEngine::new((0, 0));
+        for ch in ('a'..='z').cycle().take(TRAIL_VISIBLE + 50) {
+            e.on_char(ch);
         }
-        // Some tiles outside the safe zone should have been removed.
-        assert!(
-            e.trail.len() < initial_len,
-            "old tiles should have been removed"
+        e.tick_visuals();
+        assert_eq!(
+            e.trail.len(),
+            TRAIL_VISIBLE,
+            "trail must self-trim to the visible window"
         );
-        // The safe zone is still intact.
-        assert!(e.trail.len() >= TRAIL_SAFE_ZONE);
+        // Newest still full, oldest nearly gone → smooth removal.
+        assert_eq!(e.trail.last().unwrap().brightness, TILE_MAX_BRIGHTNESS);
+        assert!(e.trail.first().unwrap().brightness < TILE_MAX_BRIGHTNESS);
+    }
+
+    #[test]
+    fn short_trail_inside_safe_head_stays_full_bright() {
+        let mut e = WritingEngine::new((0, 0));
+        for ch in ('a'..='z').cycle().take(TRAIL_SAFE) {
+            e.on_char(ch);
+        }
+        e.tick_visuals();
+        assert_eq!(e.trail.len(), TRAIL_SAFE);
+        assert!(e.trail.iter().all(|t| t.brightness == TILE_MAX_BRIGHTNESS));
     }
 }
