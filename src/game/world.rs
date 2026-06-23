@@ -117,7 +117,7 @@ impl WorldView {
                 }
             }
             pace_decay(&mut p.pace);
-            apply_trail_fade(&mut p.trail, visible_len_for_pace(p.pace));
+            apply_trail_fade(&mut p.trail, visible_len_for_pace(p.pace), p.pace);
         }
     }
 

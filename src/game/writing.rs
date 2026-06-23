@@ -155,35 +155,33 @@ pub fn trail_brightness(from_tail: usize, visible_len: usize) -> u8 {
     (TILE_MAX_BRIGHTNESS as f32 * t * t).round() as u8
 }
 
-/// Per-frame fade-out rate for a tile based on its individual `written_pace`.
-/// Fast-written tiles (pace → 1.0) fade slowly; slowly-written tiles fade fast.
-///   written_pace = 1.0 → rate   5  (≈ 40 frames, 0.67s — long tail lingers)
-///   written_pace = 0.5 → rate 100  (≈  2 frames, fast snap)
-///   written_pace = 0.0 → rate 200  (≈  1 frame,  instant)
-fn fade_out_rate(written_pace: f32) -> u8 {
-    let p = written_pace.clamp(0.0, 1.0);
-    (5.0 + (1.0 - p) * 195.0).round() as u8
+/// Compute the per-frame fade-out rate for tiles past `visible_len`.
+/// Fast typing (pace → 1.0): slow fade so the long tail lingers visibly.
+/// Slow typing (pace → 0.0): fast fade so the short tail snaps away quickly.
+///   pace = 1.0 → rate  5  (200/5  = 40 frames ≈ 0.67s)
+///   pace = 0.5 → rate 28  (200/28 ≈  7 frames ≈ 0.12s)
+///   pace = 0.0 → rate 50  (200/50 =  4 frames ≈ 0.07s)
+fn fade_out_rate(pace: f32) -> u8 {
+    let p = pace.clamp(0.0, 1.0);
+    (5.0 + (1.0 - p) * 45.0).round() as u8
 }
 
 /// Apply pace-based trail management:
 /// - Tiles within `visible_len` of the tail → full brightness (solid color).
-/// - Tiles beyond `visible_len` → each fades at its own `written_pace`-derived rate.
+/// - Tiles beyond `visible_len` → fade out at a pace-dependent rate.
 /// - Tiles at brightness 0 → removed.
-///
-/// Because every tile carries the pace at which it was typed, fast-typed bursts
-/// fade slowly as a block while slow-typed tiles vanish almost instantly —
-/// creating the natural "chunks disappear at their own speed" effect.
 ///
 /// Shared by single-player (`WritingEngine`) and multiplayer (`WorldView`) so
 /// both fade and trim identically and *locally* — no network sync needed.
-pub fn apply_trail_fade(trail: &mut Vec<Tile>, visible_len: usize) {
+pub fn apply_trail_fade(trail: &mut Vec<Tile>, visible_len: usize, pace: f32) {
+    let rate = fade_out_rate(pace);
     let len = trail.len();
     let fade_start = len.saturating_sub(visible_len);
 
     for (i, t) in trail.iter_mut().enumerate() {
         if i < fade_start {
-            // Outside visible window: fade at this tile's individual rate.
-            t.brightness = t.brightness.saturating_sub(fade_out_rate(t.written_pace));
+            // Outside visible window: fade toward removal.
+            t.brightness = t.brightness.saturating_sub(rate);
         } else {
             // Inside visible window: solid color.
             t.brightness = TILE_MAX_BRIGHTNESS;
@@ -242,7 +240,7 @@ impl WritingEngine {
             }
         }
         pace_decay(&mut self.pace);
-        apply_trail_fade(&mut self.trail, visible_len_for_pace(self.pace));
+        apply_trail_fade(&mut self.trail, visible_len_for_pace(self.pace), self.pace);
     }
 
     pub fn on_char(&mut self, ch: char) -> StepResult {
