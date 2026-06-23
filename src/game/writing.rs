@@ -112,7 +112,8 @@ pub fn pace_bump(pace: &mut f32) {
     *pace = (*pace + PACE_GAIN).min(1.0);
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::derive_partial_eq_without_eq)]
 pub struct Tile {
     pub pos: (i32, i32),
     pub ch: char,
@@ -122,6 +123,10 @@ pub struct Tile {
     pub glow: u32,
     /// Current brightness (0 = invisible and will be removed, TILE_MAX_BRIGHTNESS = full).
     pub brightness: u8,
+    /// Typing pace at write time — drives the individual fade-out rate for this tile.
+    /// Defaults to 0.0 for tiles from snapshots/tests that don't set it.
+    #[serde(default)]
+    pub written_pace: f32,
 }
 
 /// How many ticks a trigger-tile glows after firing.
@@ -150,33 +155,35 @@ pub fn trail_brightness(from_tail: usize, visible_len: usize) -> u8 {
     (TILE_MAX_BRIGHTNESS as f32 * t * t).round() as u8
 }
 
-/// Compute the per-frame fade-out rate for tiles past `visible_len`.
-/// Fast typing (pace → 1.0): slow fade so the long tail lingers visibly.
-/// Slow typing (pace → 0.0): fast fade so the short tail snaps away quickly.
-///   pace = 1.0 → rate  5  (200/5  = 40 frames ≈ 0.67s)
-///   pace = 0.5 → rate 28  (200/28 ≈  7 frames ≈ 0.12s)
-///   pace = 0.0 → rate 50  (200/50 =  4 frames ≈ 0.07s)
-fn fade_out_rate(pace: f32) -> u8 {
-    let p = pace.clamp(0.0, 1.0);
-    (5.0 + (1.0 - p) * 45.0).round() as u8
+/// Per-frame fade-out rate for a tile based on its individual `written_pace`.
+/// Fast-written tiles (pace → 1.0) fade slowly; slowly-written tiles fade fast.
+///   written_pace = 1.0 → rate   5  (≈ 40 frames, 0.67s — long tail lingers)
+///   written_pace = 0.5 → rate 100  (≈  2 frames, fast snap)
+///   written_pace = 0.0 → rate 200  (≈  1 frame,  instant)
+fn fade_out_rate(written_pace: f32) -> u8 {
+    let p = written_pace.clamp(0.0, 1.0);
+    (5.0 + (1.0 - p) * 195.0).round() as u8
 }
 
 /// Apply pace-based trail management:
 /// - Tiles within `visible_len` of the tail → full brightness (solid color).
-/// - Tiles beyond `visible_len` → fade out at a pace-dependent rate.
+/// - Tiles beyond `visible_len` → each fades at its own `written_pace`-derived rate.
 /// - Tiles at brightness 0 → removed.
+///
+/// Because every tile carries the pace at which it was typed, fast-typed bursts
+/// fade slowly as a block while slow-typed tiles vanish almost instantly —
+/// creating the natural "chunks disappear at their own speed" effect.
 ///
 /// Shared by single-player (`WritingEngine`) and multiplayer (`WorldView`) so
 /// both fade and trim identically and *locally* — no network sync needed.
-pub fn apply_trail_fade(trail: &mut Vec<Tile>, visible_len: usize, pace: f32) {
-    let rate = fade_out_rate(pace);
+pub fn apply_trail_fade(trail: &mut Vec<Tile>, visible_len: usize) {
     let len = trail.len();
     let fade_start = len.saturating_sub(visible_len);
 
     for (i, t) in trail.iter_mut().enumerate() {
         if i < fade_start {
-            // Outside visible window: fade toward removal.
-            t.brightness = t.brightness.saturating_sub(rate);
+            // Outside visible window: fade at this tile's individual rate.
+            t.brightness = t.brightness.saturating_sub(fade_out_rate(t.written_pace));
         } else {
             // Inside visible window: solid color.
             t.brightness = TILE_MAX_BRIGHTNESS;
@@ -202,7 +209,7 @@ pub struct WritingEngine {
     pub pace: f32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StepResult {
     Wrote(Tile),
     WroteAndTurned(Tile, Direction),
@@ -235,7 +242,7 @@ impl WritingEngine {
             }
         }
         pace_decay(&mut self.pace);
-        apply_trail_fade(&mut self.trail, visible_len_for_pace(self.pace), self.pace);
+        apply_trail_fade(&mut self.trail, visible_len_for_pace(self.pace));
     }
 
     pub fn on_char(&mut self, ch: char) -> StepResult {
@@ -248,6 +255,7 @@ impl WritingEngine {
             tick: self.tick,
             glow: 0,
             brightness: TILE_MAX_BRIGHTNESS,
+            written_pace: self.pace,
         };
         self.trail.push(tile.clone());
 
@@ -558,6 +566,7 @@ mod tests {
             tick: 7,
             glow: GLOW_TICKS,
             brightness: TILE_MAX_BRIGHTNESS,
+            written_pace: 0.0,
         };
         let s = ron::to_string(&t).unwrap();
         let back: Tile = ron::from_str(&s).unwrap();
