@@ -359,10 +359,18 @@ mod tests {
         }
         w.tick_visuals();
         let p = &w.players[0];
-        // Client trims to the pace-derived window with no network removal message.
-        assert_eq!(p.trail.len(), visible_len_for_pace(p.pace));
-        // All visible tiles keep full brightness — no gradient.
-        assert!(p.trail.iter().all(|t| t.brightness == TILE_MAX_BRIGHTNESS));
+        let vl = visible_len_for_pace(p.pace);
+        // Exactly visible_len tiles at full brightness; extras are fading out.
+        let full = p
+            .trail
+            .iter()
+            .filter(|t| t.brightness == TILE_MAX_BRIGHTNESS)
+            .count();
+        assert_eq!(full, vl, "exactly visible_len tiles at full brightness");
+        assert!(
+            p.trail.iter().all(|t| t.brightness > 0),
+            "no invisible tiles remain"
+        );
     }
 
     #[test]

@@ -150,18 +150,32 @@ pub fn trail_brightness(from_tail: usize, visible_len: usize) -> u8 {
     (TILE_MAX_BRIGHTNESS as f32 * t * t).round() as u8
 }
 
-/// Trim the trail to `visible_len` (derived from the player's typing pace) and
-/// set all remaining tiles to full brightness. Shared by single-player
-/// (`WritingEngine`) and multiplayer (`WorldView`) so both trim identically and
-/// *locally* — no network sync needed.
+/// Per-frame brightness decrease for tiles that are fading out (past visible_len).
+/// 200 / 25 = 8 frames ≈ 130 ms of fade animation before removal.
+const TRAIL_FADE_OUT_RATE: u8 = 25;
+
+/// Apply pace-based trail management:
+/// - Tiles within `visible_len` of the tail → full brightness (solid color).
+/// - Tiles beyond `visible_len` → fade out by `TRAIL_FADE_OUT_RATE` per frame.
+/// - Tiles at brightness 0 → removed.
+///
+/// Shared by single-player (`WritingEngine`) and multiplayer (`WorldView`) so
+/// both fade and trim identically and *locally* — no network sync needed.
 pub fn apply_trail_fade(trail: &mut Vec<Tile>, visible_len: usize) {
     let len = trail.len();
-    if len > visible_len {
-        trail.drain(0..len - visible_len);
+    let fade_start = len.saturating_sub(visible_len);
+
+    for (i, t) in trail.iter_mut().enumerate() {
+        if i < fade_start {
+            // Outside visible window: fade toward removal.
+            t.brightness = t.brightness.saturating_sub(TRAIL_FADE_OUT_RATE);
+        } else {
+            // Inside visible window: solid color.
+            t.brightness = TILE_MAX_BRIGHTNESS;
+        }
     }
-    for t in trail.iter_mut() {
-        t.brightness = TILE_MAX_BRIGHTNESS;
-    }
+
+    trail.retain(|t| t.brightness > 0);
 }
 
 #[derive(Debug, Clone)]
@@ -631,10 +645,23 @@ mod tests {
             e.on_char(ch);
             e.tick_visuals();
         }
-        assert!(e.trail.len() <= TRAIL_MAX_VISIBLE);
-        assert_eq!(e.trail.len(), visible_len_for_pace(e.pace));
-        // All visible tiles at full brightness — no gradient.
-        assert!(e.trail.iter().all(|t| t.brightness == TILE_MAX_BRIGHTNESS));
+        let vl = visible_len_for_pace(e.pace);
+        // The visible window is respected; any extra tiles are in the fade-out
+        // zone and will vanish within a few frames.
+        let full_bright = e
+            .trail
+            .iter()
+            .filter(|t| t.brightness == TILE_MAX_BRIGHTNESS)
+            .count();
+        assert_eq!(
+            full_bright, vl,
+            "exactly visible_len tiles at full brightness"
+        );
+        // Fading-out tiles (if any) must be dimmer.
+        assert!(
+            e.trail.iter().all(|t| t.brightness > 0),
+            "no fully-invisible tiles remain"
+        );
     }
 
     #[test]
