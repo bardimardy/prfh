@@ -245,12 +245,18 @@ impl HostState {
     }
 
     /// Advance visual state by one tick; returns any messages to broadcast
-    /// (currently only `Respawned` events).
+    /// (`Respawned` and `TrailTrimmed` events).
     pub fn tick_visuals(&mut self) -> Vec<ServerMsg> {
-        for p in self.players.values_mut() {
-            p.engine.tick_visuals();
-        }
         let mut msgs = Vec::new();
+        for (id, p) in &mut self.players {
+            let removed = p.engine.tick_visuals();
+            if removed > 0 {
+                msgs.push(ServerMsg::TrailTrimmed {
+                    id: *id,
+                    count: removed,
+                });
+            }
+        }
         let expired: Vec<PlayerId> = self
             .dead_ticks
             .iter_mut()

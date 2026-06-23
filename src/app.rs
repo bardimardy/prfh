@@ -101,9 +101,11 @@ impl App {
             }
         }
         match &mut self.mode {
-            Mode::Single(e) => e.tick_visuals(),
+            Mode::Single(e) => {
+                let _ = e.tick_visuals();
+            }
             // Host tick_visuals is driven by run_host (which also broadcasts
-            // the returned Respawned messages), so we skip it here.
+            // the returned messages), so we skip it here.
             Mode::Host(_) => {}
             Mode::Client(w) => w.tick_visuals(),
         }

@@ -149,8 +149,9 @@ impl WritingEngine {
     }
 
     /// Render-time tick: decrement glow, fade old tiles, remove invisible ones.
+    /// Returns the number of tiles removed by fading (for network sync).
     /// Called once per frame from the app loop, regardless of input.
-    pub fn tick_visuals(&mut self) {
+    pub fn tick_visuals(&mut self) -> u32 {
         self.idle_frames = self.idle_frames.saturating_add(1);
         let rate = fade_rate(self.idle_frames);
 
@@ -169,8 +170,9 @@ impl WritingEngine {
             }
         }
 
-        // Remove tiles that have fully faded (brightness == 0).
+        let before = self.trail.len();
         self.trail.retain(|t| t.brightness > 0);
+        (before - self.trail.len()) as u32
     }
 
     pub fn on_char(&mut self, ch: char) -> StepResult {

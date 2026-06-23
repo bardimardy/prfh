@@ -54,6 +54,11 @@ pub enum ServerMsg {
         id: PlayerId,
         pos: (i32, i32),
     },
+    /// N oldest tiles of a player's trail were removed by fading.
+    TrailTrimmed {
+        id: PlayerId,
+        count: u32,
+    },
 }
 
 /// Serialize a message to a single compact RON line terminated by '\n'.

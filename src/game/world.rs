@@ -174,6 +174,12 @@ impl WorldView {
                 }
             }
             ServerMsg::Reject { .. } => {}
+            ServerMsg::TrailTrimmed { id, count } => {
+                if let Some(p) = self.player_mut(id) {
+                    let remove = (count as usize).min(p.trail.len());
+                    p.trail.drain(..remove);
+                }
+            }
             ServerMsg::Died { id } => {
                 if let Some(p) = self.player_mut(id) {
                     p.trail.clear();
