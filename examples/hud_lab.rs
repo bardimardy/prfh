@@ -104,6 +104,47 @@ impl Reveal {
     }
 }
 
+/// Cursor-Stil (der „Schreibkopf" des Spielers) — alle in Akzentfarbe.
+#[derive(Clone, Copy, PartialEq)]
+enum CursorStyle {
+    /// Gefülltes Akzent-Kästchen mit dunklem Richtungs-Dreieck (solide, klar).
+    Block,
+    /// Schlankes Richtungs-Chevron in Akzent-fg, transparent (diegetisch).
+    Chevron,
+    /// Chevron mit sanftem Luminanz-Atmen (lebendig).
+    Pulse,
+    /// Heller Kopf + gedimmte Akzent-Schleppe dahinter (Bewegungsgefühl).
+    Comet,
+}
+impl CursorStyle {
+    fn label(self) -> &'static str {
+        match self {
+            CursorStyle::Block => "block",
+            CursorStyle::Chevron => "chevron",
+            CursorStyle::Pulse => "pulse",
+            CursorStyle::Comet => "comet",
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            CursorStyle::Block => CursorStyle::Chevron,
+            CursorStyle::Chevron => CursorStyle::Pulse,
+            CursorStyle::Pulse => CursorStyle::Comet,
+            CursorStyle::Comet => CursorStyle::Block,
+        }
+    }
+}
+
+/// Richtungspfeil → gefülltes Dreieck + Schleppen-Offset (entgegen Laufrichtung).
+fn dir_glyph(dir: char) -> (char, (i32, i32)) {
+    match dir {
+        '↑' => ('▲', (0, 1)),
+        '↓' => ('▼', (0, -1)),
+        '←' => ('◀', (1, 0)),
+        _ => ('▶', (-1, 0)),
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Info,  // 1 Zeile, häufig
@@ -114,7 +155,7 @@ impl Kind {
     fn height(self) -> u16 {
         match self {
             Kind::Info => 1,
-            _ => 3,
+            _ => 2, // Titel + Detail, keine leere Kopfzeile
         }
     }
 }
@@ -224,6 +265,7 @@ struct State {
     combo: u32,
     mode: RenderMode,
     reveal: Reveal,
+    cursor: CursorStyle,
     notifs: Vec<Notif>,
     seq: usize,
     inv_open: bool,
@@ -239,8 +281,9 @@ impl State {
             frames: false,
             dir: '→',
             combo: 7,
-            mode: RenderMode::Hybrid,
+            mode: RenderMode::FullFx,
             reveal: Reveal::Coalesce,
+            cursor: CursorStyle::Pulse,
             notifs: Vec::new(),
             seq: 0,
             inv_open: false,
@@ -318,6 +361,7 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('n') => state.fire(),
                         KeyCode::Char('m') => state.mode = state.mode.next(),
                         KeyCode::Char('i') => state.reveal = state.reveal.next(),
+                        KeyCode::Char('c') => state.cursor = state.cursor.next(),
                         KeyCode::Char('v') => state.toggle_inventory(),
                         KeyCode::Char('f') => state.frames = !state.frames,
                         KeyCode::Up => state.dir = '↑',
@@ -471,13 +515,13 @@ fn render_text(buf: &mut Buffer, rect: Rect, n: &Notif, alpha: f32) {
             Style::default().fg(title_fg).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD),
         ))
         .alignment(Alignment::Center)
-        .render(Rect { y: rect.y + 1, height: 1, ..rect }, buf);
+        .render(Rect { y: rect.y, height: 1, ..rect }, buf);
         Paragraph::new(Span::styled(
             n.detail.clone(),
             Style::default().fg(detail_fg).bg(theme::PANEL_BG),
         ))
         .alignment(Alignment::Center)
-        .render(Rect { y: rect.y + 2, height: 1, ..rect }, buf);
+        .render(Rect { y: rect.y + 1, height: 1, ..rect }, buf);
     }
 }
 
@@ -510,7 +554,7 @@ fn draw_world_bg(buf: &mut Buffer, area: Rect, frame: u64) {
 fn layout_corners(f: &mut Frame, area: Rect, state: &State) {
     chip(f, anchor_rect(area, Anchor::TopLeft, 9, 1), "dir", &state.dir.to_string(), state.frames);
     chip(f, anchor_rect(area, Anchor::TopRight, 12, 1), "combo", &format!("x{}", state.combo), state.frames);
-    cursor_marker(f, area, state.dir);
+    cursor_marker(f, area, state.dir, state.cursor, state.frame);
     players_strip(f, anchor_rect(area, Anchor::BottomLeft, 30, 1));
 }
 
@@ -525,7 +569,7 @@ fn layout_bottom_strip(f: &mut Frame, area: Rect, state: &State) {
         Span::styled("(du) rival ", Style::default().fg(theme::TEXT_DIM)),
     ]);
     f.render_widget(Paragraph::new(line).style(Style::default().bg(theme::PANEL_BG)), rect);
-    cursor_marker(f, area, state.dir);
+    cursor_marker(f, area, state.dir, state.cursor, state.frame);
 }
 
 fn layout_diegetic(f: &mut Frame, area: Rect, state: &State) {
@@ -545,15 +589,53 @@ fn layout_diegetic(f: &mut Frame, area: Rect, state: &State) {
     }
 }
 
-fn cursor_marker(f: &mut Frame, area: Rect, dir: char) {
-    let c = anchor_rect(area, Anchor::Center, 1, 1);
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            dir.to_string(),
-            Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
-        )),
-        c,
-    );
+fn cursor_marker(f: &mut Frame, area: Rect, dir: char, style: CursorStyle, frame: u64) {
+    let cx = area.left() + area.width / 2;
+    let cy = area.top() + area.height / 2;
+    let (glyph, (bx, by)) = dir_glyph(dir);
+    let buf = f.buffer_mut();
+
+    // Sanftes Atmen 0.55..1.0 (nur Pulse): dimmt die Akzent-Luminanz.
+    let pulse = if style == CursorStyle::Pulse {
+        0.78 + 0.22 * (frame as f32 * 0.18).sin()
+    } else {
+        1.0
+    };
+    let accent_bright = lerp(theme::PANEL_BG, theme::ACCENT, pulse);
+    let accent_dim = lerp(Color::Rgb(0x14, 0x10, 0x12), theme::ACCENT, 0.45);
+
+    match style {
+        CursorStyle::Block => {
+            if let Some(cell) = buf.cell_mut((cx, cy)) {
+                cell.set_char(glyph)
+                    .set_fg(theme::HIGHLIGHT_FG)
+                    .set_bg(theme::ACCENT)
+                    .set_style(Style::default().add_modifier(Modifier::BOLD));
+            }
+        }
+        CursorStyle::Chevron | CursorStyle::Pulse => {
+            if let Some(cell) = buf.cell_mut((cx, cy)) {
+                cell.set_char(glyph)
+                    .set_fg(accent_bright)
+                    .set_style(Style::default().add_modifier(Modifier::BOLD));
+            }
+        }
+        CursorStyle::Comet => {
+            // gedimmte Schleppe hinter dem Kopf (entgegen der Laufrichtung)
+            let tx = cx as i32 + bx;
+            let ty = cy as i32 + by;
+            if tx >= area.left() as i32 && ty >= area.top() as i32 {
+                if let Some(cell) = buf.cell_mut((tx as u16, ty as u16)) {
+                    cell.set_char('•').set_fg(accent_dim);
+                }
+            }
+            if let Some(cell) = buf.cell_mut((cx, cy)) {
+                cell.set_char(glyph)
+                    .set_fg(theme::ACCENT)
+                    .set_style(Style::default().add_modifier(Modifier::BOLD));
+            }
+        }
+    }
 }
 
 fn chip(f: &mut Frame, rect: Rect, key: &str, val: &str, frames: bool) {
@@ -621,7 +703,8 @@ fn draw_help(f: &mut Frame, area: Rect, state: &State) {
         Span::styled("│ n notif · ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(format!("m mode:{} ", state.mode.label()), Style::default().fg(theme::HIGHLIGHT_BG).add_modifier(Modifier::BOLD)),
         Span::styled(format!("i reveal:{} ", state.reveal.label()), Style::default().fg(reveal_dim)),
-        Span::styled("· 1/2/3 layout · v inv · f frames · q quit", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled(format!("c cursor:{} ", state.cursor.label()), Style::default().fg(theme::ACCENT)),
+        Span::styled("· 1/2/3 · v inv · f frames · q", Style::default().fg(theme::TEXT_DIM)),
     ]);
     let rect = Rect { x: area.left(), y: area.bottom().saturating_sub(1), width: area.width, height: 1 };
     f.render_widget(Paragraph::new(line).style(Style::default().bg(Color::Rgb(0x18, 0x18, 0x1C))), rect);
