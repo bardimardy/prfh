@@ -79,13 +79,37 @@ pub fn buffer_ends_with_trigger(word: &str) -> bool {
 /// Initial brightness of a freshly written tile.
 pub const TILE_MAX_BRIGHTNESS: u8 = 200;
 
-/// Newest tiles kept at full brightness — the bright "head" near the cursor.
-pub const TRAIL_SAFE: usize = 10;
-/// Tiles behind the head over which brightness ramps linearly from full to ~0.
-pub const TRAIL_FADE: usize = 60;
-/// Total visible trail length. Older tiles are dropped — they are already at
-/// ~0 brightness, so the removal reads as a smooth disappearance.
-pub const TRAIL_VISIBLE: usize = TRAIL_SAFE + TRAIL_FADE;
+/// Newest tiles kept at full brightness — the crisp "head" at the cursor.
+pub const TRAIL_SAFE: usize = 5;
+/// Visible trail length at the slowest pace (idle): short tail.
+pub const TRAIL_MIN_VISIBLE: usize = 20;
+/// Visible trail length at full pace (typing fast): long comet tail.
+pub const TRAIL_MAX_VISIBLE: usize = 100;
+
+/// How much one keystroke adds to the pace gauge (clamped to 1.0). ~7 fast
+/// keystrokes saturate it.
+const PACE_GAIN: f32 = 0.16;
+/// Per-frame multiplicative decay of the pace gauge (~60 fps). Decays to ~half
+/// in ~0.3s, so the trail retracts smoothly a beat after you slow down.
+const PACE_DECAY: f32 = 0.965;
+
+/// Map a normalized typing pace `[0,1]` to the current visible trail length.
+/// Faster typing → longer trail; idle → short trail.
+pub fn visible_len_for_pace(pace: f32) -> usize {
+    let p = pace.clamp(0.0, 1.0);
+    let span = (TRAIL_MAX_VISIBLE - TRAIL_MIN_VISIBLE) as f32;
+    TRAIL_MIN_VISIBLE + (p * span).round() as usize
+}
+
+/// Advance the pace gauge by one idle frame (decay toward 0).
+pub fn pace_decay(pace: &mut f32) {
+    *pace = (*pace * PACE_DECAY).max(0.0);
+}
+
+/// Bump the pace gauge for one keystroke (toward 1.0).
+pub fn pace_bump(pace: &mut f32) {
+    *pace = (*pace + PACE_GAIN).min(1.0);
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tile {
@@ -102,36 +126,41 @@ pub struct Tile {
 /// How many ticks a trigger-tile glows after firing.
 pub const GLOW_TICKS: u32 = 30;
 
-/// Brightness for a tile `from_tail` positions behind the newest (0 = newest),
-/// as a pure function of position — independent of idle time. This is what
-/// gives the trail its continuous transparency gradient *while* writing.
-pub fn trail_brightness(from_tail: usize) -> u8 {
+/// Brightness for a tile `from_tail` positions behind the newest (0 = newest)
+/// given the current `visible_len`. Pure function of position — independent of
+/// idle time, so the gradient shows *while* writing.
+///
+/// The fade uses a quadratic ease-out that reaches exactly 0 at the visible
+/// edge, so the tail dissolves smoothly into the background instead of
+/// hard-cutting to a block of black.
+pub fn trail_brightness(from_tail: usize, visible_len: usize) -> u8 {
     if from_tail < TRAIL_SAFE {
         return TILE_MAX_BRIGHTNESS;
     }
-    let into_fade = from_tail - TRAIL_SAFE;
-    if into_fade >= TRAIL_FADE {
+    let fade = visible_len.saturating_sub(TRAIL_SAFE).max(1);
+    let into = from_tail - TRAIL_SAFE;
+    if into >= fade {
         return 0;
     }
-    // Linear ramp: just below full right behind the head, ~0 at the visible
-    // edge. Dividing by `TRAIL_FADE + 1` keeps the first fade tile strictly
-    // dimmer than the head, so the gradient is continuous.
-    let remaining = TRAIL_FADE - into_fade; // TRAIL_FADE ..= 1
-    ((TILE_MAX_BRIGHTNESS as usize * remaining) / (TRAIL_FADE + 1)) as u8
+    // t: just below 1.0 right behind the head → 0.0 at the oldest retained tile.
+    // Squaring eases the tail out (many near-black tiles) so the disappearance
+    // is gradual rather than a hard cut to black.
+    let t = (fade - 1 - into) as f32 / fade as f32;
+    (TILE_MAX_BRIGHTNESS as f32 * t * t).round() as u8
 }
 
-/// Apply the positional brightness gradient and trim the trail to
-/// `TRAIL_VISIBLE`. Shared by single-player (`WritingEngine`) and multiplayer
-/// (`WorldView`) so both fade and self-trim identically and *locally* — no
-/// network sync of brightness or removals is needed.
-pub fn apply_trail_fade(trail: &mut Vec<Tile>) {
+/// Apply the positional brightness gradient and trim the trail to `visible_len`
+/// (derived from the player's typing pace). Shared by single-player
+/// (`WritingEngine`) and multiplayer (`WorldView`) so both fade and self-trim
+/// identically and *locally* — no network sync of brightness or removals.
+pub fn apply_trail_fade(trail: &mut Vec<Tile>, visible_len: usize) {
     let len = trail.len();
-    if len > TRAIL_VISIBLE {
-        trail.drain(0..len - TRAIL_VISIBLE);
+    if len > visible_len {
+        trail.drain(0..len - visible_len);
     }
     let len = trail.len();
     for (i, t) in trail.iter_mut().enumerate() {
-        t.brightness = trail_brightness(len - 1 - i);
+        t.brightness = trail_brightness(len - 1 - i, visible_len);
     }
 }
 
@@ -146,6 +175,9 @@ pub struct WritingEngine {
     pub paused: bool,
     /// Monotonically increasing tick counter, advanced on every char write.
     pub tick: u64,
+    /// Typing-pace gauge in `[0,1]`: rises per keystroke, decays per frame.
+    /// Drives the dynamic visible trail length (fast typing → longer trail).
+    pub pace: f32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -167,24 +199,27 @@ impl WritingEngine {
             doubt: 0,
             paused: false,
             tick: 0,
+            pace: 0.0,
         }
     }
 
-    /// Render-time tick: decrement glow, apply the positional fade gradient and
-    /// trim the trail. Called once per frame from the app loop, regardless of
-    /// input — the gradient is purely positional, so it shows while writing.
+    /// Render-time tick: decrement glow, decay the pace gauge, then apply the
+    /// positional fade gradient and trim the trail to the pace-derived length.
+    /// Called once per frame from the app loop, regardless of input.
     pub fn tick_visuals(&mut self) {
         for t in &mut self.trail {
             if t.glow > 0 {
                 t.glow -= 1;
             }
         }
-        apply_trail_fade(&mut self.trail);
+        pace_decay(&mut self.pace);
+        apply_trail_fade(&mut self.trail, visible_len_for_pace(self.pace));
     }
 
     pub fn on_char(&mut self, ch: char) -> StepResult {
         let is_boundary = ch.is_whitespace() || matches!(ch, '.' | ',' | '!' | '?' | ';' | ':');
 
+        pace_bump(&mut self.pace);
         let tile = Tile {
             pos: self.cursor,
             ch,
@@ -513,22 +548,41 @@ mod tests {
     }
 
     #[test]
-    fn trail_brightness_is_positional_full_head_then_monotonic_ramp() {
+    fn trail_brightness_eases_to_zero_at_tail() {
+        let l = 60;
         // The bright head stays full.
-        assert_eq!(trail_brightness(0), TILE_MAX_BRIGHTNESS);
-        assert_eq!(trail_brightness(TRAIL_SAFE - 1), TILE_MAX_BRIGHTNESS);
+        assert_eq!(trail_brightness(0, l), TILE_MAX_BRIGHTNESS);
+        assert_eq!(trail_brightness(TRAIL_SAFE - 1, l), TILE_MAX_BRIGHTNESS);
         // Right behind the head it has started to dim, but is still visible.
-        assert!(trail_brightness(TRAIL_SAFE) < TILE_MAX_BRIGHTNESS);
-        assert!(trail_brightness(TRAIL_SAFE) > 0);
+        assert!(trail_brightness(TRAIL_SAFE, l) < TILE_MAX_BRIGHTNESS);
+        assert!(trail_brightness(TRAIL_SAFE, l) > 0);
         // Non-increasing with age across the whole visible window.
-        let mut prev = trail_brightness(0);
-        for ft in 1..TRAIL_VISIBLE {
-            let b = trail_brightness(ft);
+        let mut prev = trail_brightness(0, l);
+        for ft in 1..l {
+            let b = trail_brightness(ft, l);
             assert!(b <= prev, "brightness must not increase with age");
             prev = b;
         }
-        // Beyond the visible window: fully gone.
-        assert_eq!(trail_brightness(TRAIL_VISIBLE), 0);
+        // Reaches exactly 0 at the visible edge (smooth dissolve, no hard cut)…
+        assert_eq!(trail_brightness(l, l), 0);
+        // …and the quadratic ease leaves several near-black tiles before the edge.
+        let near_black = (TRAIL_SAFE..l)
+            .filter(|ft| trail_brightness(*ft, l) == 0)
+            .count();
+        assert!(
+            near_black >= 2,
+            "tail should ease into black, got {near_black}"
+        );
+    }
+
+    #[test]
+    fn visible_len_grows_with_pace() {
+        assert_eq!(visible_len_for_pace(0.0), TRAIL_MIN_VISIBLE);
+        assert_eq!(visible_len_for_pace(1.0), TRAIL_MAX_VISIBLE);
+        assert!(visible_len_for_pace(0.5) > visible_len_for_pace(0.1));
+        // Clamps out-of-range input.
+        assert_eq!(visible_len_for_pace(-1.0), TRAIL_MIN_VISIBLE);
+        assert_eq!(visible_len_for_pace(2.0), TRAIL_MAX_VISIBLE);
     }
 
     #[test]
@@ -547,20 +601,60 @@ mod tests {
     }
 
     #[test]
-    fn trail_self_trims_to_visible_length() {
-        let mut e = WritingEngine::new((0, 0));
-        for ch in ('a'..='z').cycle().take(TRAIL_VISIBLE + 50) {
-            e.on_char(ch);
+    fn faster_typing_keeps_a_longer_trail() {
+        // Fast: one char per frame → pace saturates → long trail.
+        let mut fast = WritingEngine::new((0, 0));
+        for ch in ('a'..='z').cycle().take(TRAIL_MAX_VISIBLE + 40) {
+            fast.on_char(ch);
+            fast.tick_visuals();
         }
-        e.tick_visuals();
-        assert_eq!(
-            e.trail.len(),
-            TRAIL_VISIBLE,
-            "trail must self-trim to the visible window"
+        // Slow: one char per ~25 idle frames → low pace → short trail.
+        let mut slow = WritingEngine::new((0, 0));
+        for ch in ('a'..='z').cycle().take(TRAIL_MAX_VISIBLE + 40) {
+            slow.on_char(ch);
+            for _ in 0..25 {
+                slow.tick_visuals();
+            }
+        }
+        assert!(
+            fast.trail.len() > slow.trail.len(),
+            "fast={} slow={}",
+            fast.trail.len(),
+            slow.trail.len()
         );
-        // Newest still full, oldest nearly gone → smooth removal.
+        assert!(fast.pace > slow.pace, "fast pace must exceed slow pace");
+    }
+
+    #[test]
+    fn trail_self_trims_to_pace_derived_length() {
+        let mut e = WritingEngine::new((0, 0));
+        // Type fast (one char per frame) past the max window.
+        for ch in ('a'..='z').cycle().take(TRAIL_MAX_VISIBLE + 50) {
+            e.on_char(ch);
+            e.tick_visuals();
+        }
+        assert!(e.trail.len() <= TRAIL_MAX_VISIBLE);
+        assert_eq!(e.trail.len(), visible_len_for_pace(e.pace));
+        // Newest still full, oldest gone (smooth removal of an already-faded tile).
         assert_eq!(e.trail.last().unwrap().brightness, TILE_MAX_BRIGHTNESS);
         assert!(e.trail.first().unwrap().brightness < TILE_MAX_BRIGHTNESS);
+    }
+
+    #[test]
+    fn pace_decays_to_zero_when_idle() {
+        let mut e = WritingEngine::new((0, 0));
+        for ch in ('a'..='z').cycle().take(10) {
+            e.on_char(ch);
+        }
+        assert!(e.pace > 0.0);
+        for _ in 0..300 {
+            e.tick_visuals();
+        }
+        assert!(
+            e.pace < 0.01,
+            "pace should decay to ~0 when idle, got {}",
+            e.pace
+        );
     }
 
     #[test]
