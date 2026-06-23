@@ -24,14 +24,14 @@ use crossterm::{
 use ratatui::{
     backend::CrosstermBackend,
     buffer::Buffer,
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame, Terminal,
 };
 use tachyonfx::fx::{self, EvolveSymbolSet};
-use tachyonfx::{Effect, Interpolation, Motion};
+use tachyonfx::{Effect, Interpolation};
 
 use prfh::theme;
 
@@ -117,51 +117,16 @@ impl InStyle {
     }
 }
 
-#[derive(Clone, Copy, PartialEq)]
-enum OutStyle {
-    DissolveTo,
-    Sweep,
-    SweepThenDissolve,
-    Dissolve,
-}
-impl OutStyle {
-    fn label(self) -> &'static str {
-        match self {
-            OutStyle::DissolveTo => "dissolve_to",
-            OutStyle::Sweep => "sweep_out",
-            OutStyle::SweepThenDissolve => "sweep→dissolve",
-            OutStyle::Dissolve => "dissolve",
-        }
-    }
-    fn next(self) -> Self {
-        match self {
-            OutStyle::DissolveTo => OutStyle::Sweep,
-            OutStyle::Sweep => OutStyle::SweepThenDissolve,
-            OutStyle::SweepThenDissolve => OutStyle::Dissolve,
-            OutStyle::Dissolve => OutStyle::DissolveTo,
-        }
-    }
-    fn effect(self) -> Effect {
-        let to_panel = Style::default().bg(theme::PANEL_BG);
-        match self {
-            OutStyle::DissolveTo => fx::dissolve_to(to_panel, (550, Interpolation::SineIn)),
-            OutStyle::Sweep => {
-                fx::sweep_out(Motion::LeftToRight, 8, 0, theme::PANEL_BG, (550, Interpolation::SineIn))
-            }
-            OutStyle::SweepThenDissolve => fx::sequence(&[
-                fx::sweep_out(Motion::LeftToRight, 6, 0, theme::PANEL_BG, (320, Interpolation::SineIn)),
-                fx::dissolve_to(to_panel, (320, Interpolation::SineIn)),
-            ]),
-            OutStyle::Dissolve => fx::dissolve((550, Interpolation::SineIn)),
-        }
-    }
-}
-
 enum Phase {
     In,
     Hold,
     Out,
 }
+
+/// Aufbau-/Abbau-Tempo des Panels (center-out rein, center-in raus). Raus
+/// bewusst schneller als rein.
+const BUILD_SECS: f32 = 0.24;
+const COLLAPSE_SECS: f32 = 0.14;
 
 /// Eine schwebende Quick-Notification: rein-animieren → kurz halten →
 /// raus-animieren. Genau die Mechanik, die `App::trigger_banner` ersetzt.
@@ -171,10 +136,10 @@ struct Notif {
     accent: Color,
     phase: Phase,
     effect: Effect,
-    out_style: OutStyle,
     hold_left: Duration,
     expand_in: bool, // center-out Bg-Aufbau vor der Text-Enthüllung
     build: f32,      // 0..1 Fortschritt des Bg-Aufbaus (nur bei expand_in)
+    collapse: f32,   // 0..1 Fortschritt des center-in Abbaus (Out)
 }
 
 impl Notif {
@@ -183,7 +148,6 @@ impl Notif {
         detail: impl Into<String>,
         accent: Color,
         in_style: InStyle,
-        out_style: OutStyle,
     ) -> Self {
         Self {
             title: title.into(),
@@ -191,10 +155,10 @@ impl Notif {
             accent,
             phase: Phase::In,
             effect: in_style.effect(accent),
-            out_style,
             hold_left: Duration::from_millis(1600),
             expand_in: in_style == InStyle::Expand,
             build: 0.0,
+            collapse: 0.0,
         }
     }
 
@@ -207,7 +171,7 @@ impl Notif {
                 // Bg-Aufbau zuerst (center-out); der Text-Effekt läuft erst danach
                 // (in draw wird er während des Aufbaus nicht prozessiert).
                 if self.expand_in && self.build < 1.0 {
-                    self.build = (self.build + dt.as_secs_f32() / 0.24).min(1.0);
+                    self.build = (self.build + dt.as_secs_f32() / BUILD_SECS).min(1.0);
                     return false;
                 }
                 if self.effect.done() {
@@ -217,12 +181,14 @@ impl Notif {
             Phase::Hold => {
                 self.hold_left = self.hold_left.saturating_sub(dt);
                 if self.hold_left.is_zero() {
-                    self.effect = self.out_style.effect();
                     self.phase = Phase::Out;
                 }
             }
             Phase::Out => {
-                if self.effect.done() {
+                // center-in Collapse: Panel + Text ziehen sich zur Mitte zusammen
+                // und geben die Welt frei.
+                self.collapse = (self.collapse + dt.as_secs_f32() / COLLAPSE_SECS).min(1.0);
+                if self.collapse >= 1.0 {
                     return true;
                 }
             }
@@ -239,7 +205,6 @@ struct State {
     dir: char,
     combo: u32,
     in_style: InStyle,
-    out_style: OutStyle,
     notifs: Vec<Notif>,
     notif_seq: usize,
     notif_card: bool, // true = 3-Zeilen-Karte, false = 1-Zeile kompakt
@@ -257,7 +222,6 @@ impl State {
             dir: '→',
             combo: 7,
             in_style: InStyle::Expand,
-            out_style: OutStyle::DissolveTo,
             notifs: Vec::new(),
             notif_seq: 0,
             notif_card: true,
@@ -279,7 +243,7 @@ impl State {
         let (title, detail, accent) = SAMPLES[self.notif_seq % SAMPLES.len()];
         self.notif_seq += 1;
         self.notifs
-            .push(Notif::new(title, detail, accent, self.in_style, self.out_style));
+            .push(Notif::new(title, detail, accent, self.in_style));
     }
 
     fn toggle_inventory(&mut self) {
@@ -341,7 +305,6 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('3') => state.scene = 3,
                         KeyCode::Char('n') => state.fire_notif(),
                         KeyCode::Char('i') => state.in_style = state.in_style.next(),
-                        KeyCode::Char('o') => state.out_style = state.out_style.next(),
                         KeyCode::Char('v') => state.toggle_inventory(),
                         KeyCode::Char('b') => state.notif_card = !state.notif_card,
                         KeyCode::Char('f') => state.frames = !state.frames,
@@ -508,84 +471,77 @@ fn players_strip(f: &mut Frame, rect: Rect, _frames: bool) {
     f.render_widget(Paragraph::new(line), rect);
 }
 
-/// Notification-Stack: oben-mitte, neuste oben, vertikal gestapelt. Jede
-/// Notification rendert erst ihren echten Text, dann läuft ihr Effekt über
-/// genau ihr Rect (per-Notification `Effect::process`).
+/// Notification-Stack: oben-mitte, neuste oben, vertikal gestapelt. Mittig
+/// zentriert, kein Akzent-Balken. Das Panel wächst center-out rein und zieht
+/// sich center-in raus (Bg + Text gemeinsam) — die Welt darunter wird frei.
 fn draw_notifications(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
     let card = state.notif_card;
     let h: u16 = if card { 3 } else { 1 };
     let mut y = area.top() + 1;
     for n in state.notifs.iter_mut() {
-        let content_w = n.title.chars().count().max(n.detail.chars().count()) as u16;
-        // Karte: Akzent-Balken (1) + Inset (1) + Inhalt + Inset (1).
-        let w = if card {
-            (content_w + 4).clamp(16, area.width)
+        let title_w = n.title.chars().count() as u16;
+        let detail_w = n.detail.chars().count() as u16;
+        let full_w = if card {
+            (title_w.max(detail_w) + 4).clamp(16, area.width)
         } else {
-            (n.title.chars().count() as u16 + n.detail.chars().count() as u16 + 5).min(area.width)
+            (title_w + detail_w + 5).min(area.width)
         };
-        let x = area.left() + (area.width.saturating_sub(w)) / 2;
-        let rect = Rect { x, y, width: w, height: h };
 
-        // Center-out Bg-Aufbau: nur das Panel wächst aus der Mitte, noch kein Text.
-        if n.expand_in && n.build < 1.0 {
-            let bw = ((w as f32 * n.build).round() as u16).clamp(1, w);
-            let bx = rect.x + (w - bw) / 2;
-            let brect = Rect { x: bx, y, width: bw, height: h };
-            f.render_widget(Clear, brect);
+        // Breiten-Faktor: Aufbau (rein) oder Collapse (raus), sonst voll.
+        let building = n.expand_in && matches!(n.phase, Phase::In) && n.build < 1.0;
+        let factor = if building {
+            n.build
+        } else if matches!(n.phase, Phase::Out) {
+            (1.0 - n.collapse).max(0.0)
+        } else {
+            1.0
+        };
+
+        if factor > 0.01 {
+            let w = ((full_w as f32 * factor).round() as u16).clamp(1, full_w);
+            let x = area.left() + (area.width.saturating_sub(w)) / 2;
+            let rect = Rect { x, y, width: w, height: h };
+
+            // Panel-Hintergrund (zentriert, schrumpft/wächst mit factor).
+            f.render_widget(Clear, rect);
             f.render_widget(
                 Paragraph::new(vec![Line::from(""); h as usize]).style(Style::default().bg(theme::PANEL_BG)),
-                brect,
+                rect,
             );
-            y = y.saturating_add(h + 1);
-            if y >= area.bottom() {
-                break;
-            }
-            continue;
-        }
 
-        if card {
-            // Solider Panel-Block (frameless) + vertikaler Akzent-Balken links.
-            f.render_widget(Clear, rect);
-            let bg = Paragraph::new(vec![Line::from(""); h as usize])
-                .style(Style::default().bg(theme::PANEL_BG));
-            f.render_widget(bg, rect);
-            let bar = Rect { width: 1, ..rect };
-            f.render_widget(
-                Paragraph::new(vec![Line::from("▌"); h as usize]).style(Style::default().fg(n.accent)),
-                bar,
-            );
-            let text_rect = Rect {
-                x: rect.x + 2,
-                y: rect.y,
-                width: rect.width.saturating_sub(3),
-                height: h,
-            };
-            let lines = vec![
-                Line::from(""),
-                Line::from(Span::styled(
+            // Text nur, wenn das Panel nicht gerade erst aufbaut (erst Bg, dann Text).
+            if !building {
+                let title = Paragraph::new(Span::styled(
                     n.title.clone(),
                     Style::default().fg(n.accent).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD),
-                )),
-                Line::from(Span::styled(
+                ))
+                .alignment(Alignment::Center);
+                let detail = Paragraph::new(Span::styled(
                     n.detail.clone(),
                     Style::default().fg(theme::TEXT).bg(theme::PANEL_BG),
-                )),
-            ];
-            f.render_widget(Paragraph::new(lines).style(Style::default().bg(theme::PANEL_BG)), text_rect);
-        } else {
-            let p = Paragraph::new(Line::from(vec![
-                Span::styled(
-                    format!(" {} ", n.title),
-                    Style::default().fg(n.accent).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{} ", n.detail),
-                    Style::default().fg(theme::TEXT).bg(theme::PANEL_BG),
-                ),
-            ]));
-            f.render_widget(p, rect);
+                ))
+                .alignment(Alignment::Center);
+                if card {
+                    f.render_widget(title, Rect { y: rect.y + 1, height: 1, ..rect });
+                    f.render_widget(detail, Rect { y: rect.y + 2, height: 1, ..rect });
+                } else {
+                    // kompakt: Titel + Detail in einer zentrierten Zeile.
+                    let p = Paragraph::new(Line::from(vec![
+                        Span::styled(
+                            format!("{} ", n.title),
+                            Style::default().fg(n.accent).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(n.detail.clone(), Style::default().fg(theme::TEXT).bg(theme::PANEL_BG)),
+                    ]))
+                    .alignment(Alignment::Center);
+                    f.render_widget(p, rect);
+                }
+                // Text-Enthüllung (fade/evolve) nur während der In-Phase.
+                if matches!(n.phase, Phase::In) {
+                    n.effect.process(dt.into(), f.buffer_mut(), rect);
+                }
+            }
         }
-        n.effect.process(dt.into(), f.buffer_mut(), rect);
 
         y = y.saturating_add(h + 1);
         if y >= area.bottom() {
@@ -634,7 +590,6 @@ fn draw_help(f: &mut Frame, area: Rect, state: &State) {
         Span::styled(format!(" {scene} "), Style::default().fg(theme::ACCENT)),
         Span::styled("│ 1/2/3 layout · n notif · ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(format!("i in:{} ", state.in_style.label()), Style::default().fg(theme::TEXT)),
-        Span::styled(format!("o out:{} ", state.out_style.label()), Style::default().fg(theme::TEXT)),
         Span::styled(
             format!("b size:{} ", if state.notif_card { "card" } else { "compact" }),
             Style::default().fg(theme::TEXT),
