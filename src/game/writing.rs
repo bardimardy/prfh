@@ -81,8 +81,9 @@ pub const TILE_MAX_BRIGHTNESS: u8 = 200;
 
 /// Newest tiles kept at full brightness — the crisp "head" at the cursor.
 pub const TRAIL_SAFE: usize = 5;
-/// Visible trail length at the slowest pace (idle): short tail.
-pub const TRAIL_MIN_VISIBLE: usize = 20;
+/// Visible trail length at the slowest pace (idle): the hard floor the trail
+/// can shrink back to.
+pub const TRAIL_MIN_VISIBLE: usize = 70;
 /// Visible trail length at full pace (typing fast): long comet tail.
 pub const TRAIL_MAX_VISIBLE: usize = 100;
 
