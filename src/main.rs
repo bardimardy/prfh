@@ -166,7 +166,8 @@ where
         name
     };
     let (world, mut handle) = connect(&addr, &name)?;
-    let mut app = App::new_with_mode(Mode::Client(world));
+    // Arena-Snapshot wird in Task 5 aus dem Welcome übernommen; vorerst leer.
+    let mut app = App::new_with_mode(Mode::Client(world, prfh::game::arena::Arena::new()));
     app.debug = debug;
     let mut last_draw = Instant::now();
 
@@ -203,7 +204,7 @@ where
         loop {
             match handle.rx.try_recv() {
                 Ok(msg) => {
-                    if let Mode::Client(w) = &mut app.mode {
+                    if let Mode::Client(w, _) = &mut app.mode {
                         w.apply(msg);
                     }
                 }
