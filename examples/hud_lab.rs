@@ -91,12 +91,15 @@ impl InStyle {
             InStyle::Fade => InStyle::Evolve,
         }
     }
-    fn effect(self) -> Effect {
+    fn effect(self, accent: Color) -> Effect {
         match self {
-            // evolve_from enthüllt am Ende den darunterliegenden (echten) Text.
-            InStyle::Evolve => {
-                fx::evolve_from(EvolveSymbolSet::Shaded, (650, Interpolation::SineOut))
-            }
+            // evolve_INTO enthüllt am Ende den echten Text (evolve_from wäre die
+            // umgekehrte Richtung → endet in Blöcken). Die Übergangs-Symbole im
+            // Akzent-Ton auf Panel-BG, statt Default-Weiß.
+            InStyle::Evolve => fx::evolve_into(
+                (EvolveSymbolSet::Shaded, Style::default().fg(accent).bg(theme::PANEL_BG)),
+                (650, Interpolation::SineOut),
+            ),
             InStyle::Coalesce => fx::coalesce((550, Interpolation::SineOut)),
             InStyle::Fade => fx::fade_from(theme::PANEL_BG, theme::PANEL_BG, (450, Interpolation::SineOut)),
         }
@@ -174,7 +177,7 @@ impl Notif {
             detail: detail.into(),
             accent,
             phase: Phase::In,
-            effect: in_style.effect(),
+            effect: in_style.effect(accent),
             out_style,
             hold_left: Duration::from_millis(1600),
         }
@@ -266,7 +269,7 @@ impl State {
         } else {
             self.inv_open = true;
             self.inv_closing = false;
-            self.inv_effect = self.in_style.effect();
+            self.inv_effect = self.in_style.effect(theme::ACCENT);
         }
     }
 
