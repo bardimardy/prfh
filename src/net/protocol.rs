@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use crate::game::arena::{Entity, EntityId};
 use crate::game::world::{PlayerColor, PlayerId, PlayerSnapshot};
 use crate::game::writing::{Direction, Tile};
 
@@ -53,6 +54,12 @@ pub enum ServerMsg {
     Respawned {
         id: PlayerId,
         pos: (i32, i32),
+    },
+    EntitySpawned {
+        entity: Entity,
+    },
+    EntityDespawned {
+        id: EntityId,
     },
 }
 
@@ -107,6 +114,29 @@ mod tests {
             direction: Direction::Down,
             glow_len: 0,
         };
+        let back: ServerMsg = decode_line(&encode_line(&msg)).unwrap();
+        assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn server_msg_entity_spawned_roundtrip() {
+        use crate::game::arena::{Entity, EntityKind, PowerupWord};
+        let msg = ServerMsg::EntitySpawned {
+            entity: Entity {
+                id: 3,
+                pos: (12, -4),
+                kind: EntityKind::PowerupWord(PowerupWord {
+                    word: "rebase".into(),
+                }),
+            },
+        };
+        let back: ServerMsg = decode_line(&encode_line(&msg)).unwrap();
+        assert_eq!(msg, back);
+    }
+
+    #[test]
+    fn server_msg_entity_despawned_roundtrip() {
+        let msg = ServerMsg::EntityDespawned { id: 9 };
         let back: ServerMsg = decode_line(&encode_line(&msg)).unwrap();
         assert_eq!(msg, back);
     }

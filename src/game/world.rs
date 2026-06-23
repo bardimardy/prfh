@@ -201,6 +201,9 @@ impl WorldView {
                     p.is_dead = false;
                 }
             }
+            // Entity-Deltas betreffen die Sim-Arena, nicht den Render-WorldView.
+            // Der Client-Loop routet sie an die Arena-Kopie (s. main.rs::run_client).
+            ServerMsg::EntitySpawned { .. } | ServerMsg::EntityDespawned { .. } => {}
         }
     }
 }
