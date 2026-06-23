@@ -85,7 +85,7 @@ pub const TRAIL_SAFE: usize = 5;
 /// can shrink back to.
 pub const TRAIL_MIN_VISIBLE: usize = 70;
 /// Visible trail length at full pace (typing fast): long comet tail.
-pub const TRAIL_MAX_VISIBLE: usize = 100;
+pub const TRAIL_MAX_VISIBLE: usize = 300;
 
 /// How much one keystroke adds to the pace gauge (clamped to 1.0). ~7 fast
 /// keystrokes saturate it.
