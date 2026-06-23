@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::game::writing::{Direction, Tile, GLOW_TICKS};
+use crate::game::writing::{
+    fade_rate, Direction, Tile, GLOW_TICKS, TILE_MAX_BRIGHTNESS, TRAIL_SAFE_ZONE,
+};
 use crate::net::protocol::ServerMsg;
 
 pub type PlayerId = u8;
@@ -69,6 +71,8 @@ pub struct PlayerView {
     pub direction: Direction,
     pub is_self: bool,
     pub is_dead: bool,
+    /// Frames since this player's last keystroke — drives client-side fade animation.
+    pub idle_frames: u32,
 }
 
 impl PlayerView {
@@ -99,12 +103,23 @@ impl WorldView {
         self.players.iter_mut().find(|p| p.id == id)
     }
 
-    /// Decrement glow on every tile of every player (called once per frame).
+    /// Advance visual state one frame for all players (called once per frame by clients).
+    /// Replicates the host-side fade animation so remote trails fade smoothly in color.
+    /// Does NOT remove tiles — TrailTrimmed messages handle actual removal.
     pub fn tick_visuals(&mut self) {
         for p in &mut self.players {
-            for t in &mut p.trail {
+            p.idle_frames = p.idle_frames.saturating_add(1);
+            let rate = fade_rate(p.idle_frames);
+            let len = p.trail.len();
+            for (i, t) in p.trail.iter_mut().enumerate() {
                 if t.glow > 0 {
                     t.glow -= 1;
+                }
+                if i + TRAIL_SAFE_ZONE >= len {
+                    t.brightness = TILE_MAX_BRIGHTNESS;
+                } else {
+                    // Fade toward 1 (not 0) — removal is driven by TrailTrimmed.
+                    t.brightness = t.brightness.saturating_sub(rate).max(1);
                 }
             }
         }
@@ -123,6 +138,7 @@ impl WorldView {
                     .map(|s| PlayerView {
                         is_self: s.id == your_id,
                         is_dead: s.is_dead,
+                        idle_frames: 0,
                         id: s.id,
                         color: s.color,
                         name: s.name,
@@ -143,6 +159,7 @@ impl WorldView {
                         direction: Direction::Right,
                         is_self: id == self.self_id,
                         is_dead: false,
+                        idle_frames: 0,
                     });
                 }
             }
@@ -157,6 +174,7 @@ impl WorldView {
                 glow_len,
             } => {
                 if let Some(p) = self.player_mut(id) {
+                    p.idle_frames = 0;
                     p.push_tile(tile);
                     p.cursor = cursor;
                     p.direction = direction;
@@ -212,6 +230,7 @@ mod tests {
             direction: Direction::Right,
             is_self: true,
             is_dead: false,
+            idle_frames: 0,
         });
         w
     }

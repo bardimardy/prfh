@@ -347,6 +347,7 @@ impl HostState {
                 direction: p.engine.direction,
                 is_self: *id == HOST_ID,
                 is_dead: self.dead_ticks.contains_key(id),
+                idle_frames: 0,
             })
             .collect();
         WorldView {

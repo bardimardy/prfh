@@ -102,7 +102,7 @@ pub const GLOW_TICKS: u32 = 30;
 ///   0–3 frames (< ~50ms): 0  — just typed, no fade
 ///   4–63 frames (~65ms–1s):  single linear ramp 3..40
 ///   64+ frames (> 1s):   40  — peak (~5 frames to disappear)
-fn fade_rate(idle_frames: u32) -> u8 {
+pub(crate) fn fade_rate(idle_frames: u32) -> u8 {
     match idle_frames {
         0..=3 => 0,
         4..=63 => 3 + ((idle_frames - 4) * 37 / 59).min(37) as u8,
