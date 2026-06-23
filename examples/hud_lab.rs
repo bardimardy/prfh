@@ -2,16 +2,23 @@
 //!
 //!     cargo run --example hud_lab
 //!
-//! Eigenständiger Build, **null Einfluss aufs Hauptspiel**. Dient zum Explorieren
-//! des frameless HUD/Overlay-Konzepts:
-//!   * 3 Frameless-Layout-Vorschläge (Tasten 1/2/3)
-//!   * dynamische Notifications oben-mitte mit tachyonfx evolve-in / dissolve-out
-//!     (Taste n feuert; i/o zyklen In-/Out-Stil)
-//!   * Overlay-Demo: Inventar-Panel poppt rein (Taste v)
-//!   * Frames an/aus zum direkten Vergleich (Taste f)
+//! Eigenständiger Build, **null Einfluss aufs Hauptspiel**. Exploriert das
+//! frameless HUD/Overlay-Konzept und vergleicht **A/B**, wie die dynamischen
+//! Notifications am hochwertigsten reinkommen:
 //!
-//! Was hier gefällt, wird in den Design-Doc eingefroren und dann erst in `src/`
-//! gebaut (wie beim Powerup-Spec). Dieser Companion ist KEINE Spiel-Logik.
+//!   * **Render-Modus** (Taste `m`): `manual` (Geometrie + Farb-Lerp, kein
+//!     tachyonfx) · `hybrid` (Geometrie-Panel + tachyonfx-Text-Reveal) ·
+//!     `full-fx` (tachyonfx `expand`-Panel mit Block-Charakter + tachyonfx-Text)
+//!   * **Text-Reveal** (Taste `i`, für hybrid/full-fx): `coalesce` ·
+//!     `sweep+glow` · `fade`
+//!   * **Typ-getriebenes Stacking**: `n` feuert abwechselnd Info (1 Zeile) /
+//!     Event / Major (3-Zeilen-Karten) — gemischte Größen stapeln zusammen.
+//!   * 3 Frameless-Layouts (`1`/`2`/`3`), Inventar-Demo (`v`), Frames an/aus (`f`).
+//!
+//! Der Ausblend (center-in Collapse: Panel + Text ziehen zur Mitte und geben die
+//! Welt frei) ist über alle Modi gleich — das ist bereits die gewählte Signatur.
+//! Verglichen wird nur Panel-Aufbau + Text-Enthüllung. Was gewinnt, wird in
+//! `src/hud/` live verdrahtet.
 
 use std::io;
 use std::time::{Duration, Instant};
@@ -27,187 +34,198 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph},
+    widgets::{Block, Borders, Clear, Paragraph, Widget},
     Frame, Terminal,
 };
-use tachyonfx::fx::{self, EvolveSymbolSet};
-use tachyonfx::{Effect, Interpolation};
+use tachyonfx::fx::{self, ExpandDirection};
+use tachyonfx::{Effect, Interpolation, Motion};
 
+use prfh::hud::{anchor_rect, Anchor};
 use prfh::theme;
 
-// ───────────────────────────── Overlay-Framework-Skizze ─────────────────────
-// Anker-basierte Platzierung statt hartem Layout — exakt das Muster, das ins
-// echte HUD-Framework wandern soll: ein HUD-Teil kennt nur seinen Anker +
-// Wunschgröße, der Layer rechnet das Rect über der full-screen-Welt aus.
-
-#[derive(Clone, Copy)]
-enum Anchor {
-    TopLeft,
-    TopCenter,
-    TopRight,
-    BottomLeft,
-    BottomCenter,
-    Center,
-}
-
-fn anchor_rect(area: Rect, a: Anchor, w: u16, h: u16) -> Rect {
-    let w = w.min(area.width);
-    let h = h.min(area.height);
-    let cx = area.left() + (area.width.saturating_sub(w)) / 2;
-    let (x, y) = match a {
-        Anchor::TopLeft => (area.left(), area.top()),
-        Anchor::TopCenter => (cx, area.top()),
-        Anchor::TopRight => (area.right().saturating_sub(w), area.top()),
-        Anchor::BottomLeft => (area.left(), area.bottom().saturating_sub(h)),
-        Anchor::BottomCenter => (cx, area.bottom().saturating_sub(h)),
-        Anchor::Center => (
-            cx,
-            area.top() + (area.height.saturating_sub(h)) / 2,
-        ),
-    };
-    Rect { x, y, width: w, height: h }
-}
-
-// ───────────────────────────── Notification-System ──────────────────────────
+// ───────────────────────────── Notification-Modell ──────────────────────────
 
 #[derive(Clone, Copy, PartialEq)]
-enum InStyle {
-    /// Hintergrund baut sich center-out (horizontal, beide Richtungen) auf,
-    /// danach faded der Text drauf. Geometrie-Animation, kein tachyonfx-expand
-    /// (das hätte die Overshoot-Panik-Falle + Block-Chars).
-    Expand,
-    Evolve,
-    Coalesce,
-    Fade,
+enum RenderMode {
+    Manual,
+    Hybrid,
+    FullFx,
 }
-impl InStyle {
+impl RenderMode {
     fn label(self) -> &'static str {
         match self {
-            InStyle::Expand => "expand",
-            InStyle::Evolve => "evolve",
-            InStyle::Coalesce => "coalesce",
-            InStyle::Fade => "fade",
+            RenderMode::Manual => "manual",
+            RenderMode::Hybrid => "hybrid",
+            RenderMode::FullFx => "full-fx",
         }
     }
     fn next(self) -> Self {
         match self {
-            InStyle::Expand => InStyle::Evolve,
-            InStyle::Evolve => InStyle::Coalesce,
-            InStyle::Coalesce => InStyle::Fade,
-            InStyle::Fade => InStyle::Expand,
+            RenderMode::Manual => RenderMode::Hybrid,
+            RenderMode::Hybrid => RenderMode::FullFx,
+            RenderMode::FullFx => RenderMode::Manual,
         }
     }
-    fn effect(self, accent: Color) -> Effect {
+    fn uses_fx_text(self) -> bool {
+        !matches!(self, RenderMode::Manual)
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Reveal {
+    Coalesce,
+    SweepGlow,
+    Fade,
+}
+impl Reveal {
+    fn label(self) -> &'static str {
         match self {
-            // Expand: der Effekt ist nur die Text-Enthüllung NACH dem Bg-Aufbau —
-            // sanftes Auftauchen aus dem Panel-Grau.
-            InStyle::Expand => {
-                fx::fade_from(theme::PANEL_BG, theme::PANEL_BG, (220, Interpolation::SineOut))
-            }
-            // evolve_INTO enthüllt am Ende den echten Text (evolve_from wäre die
-            // umgekehrte Richtung → endet in Blöcken). Die Übergangs-Symbole im
-            // Akzent-Ton auf Panel-BG, statt Default-Weiß.
-            InStyle::Evolve => fx::evolve_into(
-                (EvolveSymbolSet::Shaded, Style::default().fg(accent).bg(theme::PANEL_BG)),
-                (650, Interpolation::SineOut),
-            ),
-            InStyle::Coalesce => fx::coalesce((550, Interpolation::SineOut)),
-            InStyle::Fade => fx::fade_from(theme::PANEL_BG, theme::PANEL_BG, (450, Interpolation::SineOut)),
+            Reveal::Coalesce => "coalesce",
+            Reveal::SweepGlow => "sweep+glow",
+            Reveal::Fade => "fade",
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            Reveal::Coalesce => Reveal::SweepGlow,
+            Reveal::SweepGlow => Reveal::Fade,
+            Reveal::Fade => Reveal::Coalesce,
+        }
+    }
+    fn effect(self, ms: u32) -> Effect {
+        match self {
+            Reveal::Coalesce => fx::coalesce((ms, Interpolation::SineOut)),
+            Reveal::SweepGlow => fx::parallel(&[
+                fx::sweep_in(Motion::LeftToRight, 10, 0, theme::PANEL_BG, (ms, Interpolation::SineOut)),
+                fx::hsl_shift(Some([0.0, 0.0, 35.0]), None, (ms, Interpolation::SineOut)),
+            ]),
+            Reveal::Fade => fx::fade_from(theme::PANEL_BG, theme::PANEL_BG, (ms, Interpolation::SineOut)),
         }
     }
 }
 
-enum Phase {
-    In,
-    Hold,
-    Out,
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Info,  // 1 Zeile, häufig
+    Event, // 3-Zeilen-Karte
+    Major, // 3-Zeilen-Karte, kräftiger
+}
+impl Kind {
+    fn height(self) -> u16 {
+        match self {
+            Kind::Info => 1,
+            _ => 3,
+        }
+    }
 }
 
-/// Aufbau-/Abbau-Tempo des Panels (center-out rein, center-in raus). Raus
-/// bewusst schneller als rein.
-const BUILD_SECS: f32 = 0.24;
-const COLLAPSE_SECS: f32 = 0.14;
+// Phasen-Tempo (gleich über alle Modi, außer Panel-Aufbau-Technik).
+const BUILD: Duration = Duration::from_millis(240);
+const TEXT: Duration = Duration::from_millis(260);
+const HOLD: Duration = Duration::from_millis(1500);
+const COLLAPSE: Duration = Duration::from_millis(140);
+fn life() -> Duration {
+    BUILD + TEXT + HOLD + COLLAPSE
+}
 
-/// Eine schwebende Quick-Notification: rein-animieren → kurz halten →
-/// raus-animieren. Genau die Mechanik, die `App::trigger_banner` ersetzt.
+fn lerp(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let (ar, ag, ab) = rgb(a);
+    let (br, bg, bb) = rgb(b);
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color::Rgb(m(ar, br), m(ag, bg), m(ab, bb))
+}
+fn rgb(c: Color) -> (u8, u8, u8) {
+    if let Color::Rgb(r, g, b) = c {
+        (r, g, b)
+    } else {
+        (0, 0, 0)
+    }
+}
+
 struct Notif {
+    kind: Kind,
     title: String,
     detail: String,
     accent: Color,
-    phase: Phase,
-    effect: Effect,
-    hold_left: Duration,
-    expand_in: bool, // center-out Bg-Aufbau vor der Text-Enthüllung
-    build: f32,      // 0..1 Fortschritt des Bg-Aufbaus (nur bei expand_in)
-    collapse: f32,   // 0..1 Fortschritt des center-in Abbaus (Out)
+    age: Duration,
+    text_fx: Option<Effect>,  // tachyonfx-Reveal (hybrid/full-fx), lazy ab Text-Phase
+    panel_fx: Option<Effect>, // tachyonfx expand-Panel (nur full-fx), lazy
+    fx_inited: bool,
 }
 
 impl Notif {
-    fn new(
-        title: impl Into<String>,
-        detail: impl Into<String>,
-        accent: Color,
-        in_style: InStyle,
-    ) -> Self {
+    fn new(kind: Kind, title: &str, detail: &str, accent: Color) -> Self {
         Self {
+            kind,
             title: title.into(),
             detail: detail.into(),
             accent,
-            phase: Phase::In,
-            effect: in_style.effect(accent),
-            hold_left: Duration::from_millis(1600),
-            expand_in: in_style == InStyle::Expand,
-            build: 0.0,
-            collapse: 0.0,
+            age: Duration::ZERO,
+            text_fx: None,
+            panel_fx: None,
+            fx_inited: false,
         }
     }
 
-    /// Phasenfortschritt. `done()` spiegelt den letzten verarbeiteten Frame —
-    /// ein Frame Versatz ist unsichtbar. Gibt true zurück, wenn die Notification
-    /// fertig (entfernbar) ist.
-    fn update(&mut self, dt: Duration) -> bool {
-        match self.phase {
-            Phase::In => {
-                // Bg-Aufbau zuerst (center-out); der Text-Effekt läuft erst danach
-                // (in draw wird er während des Aufbaus nicht prozessiert).
-                if self.expand_in && self.build < 1.0 {
-                    self.build = (self.build + dt.as_secs_f32() / BUILD_SECS).min(1.0);
-                    return false;
-                }
-                if self.effect.done() {
-                    self.phase = Phase::Hold;
-                }
-            }
-            Phase::Hold => {
-                self.hold_left = self.hold_left.saturating_sub(dt);
-                if self.hold_left.is_zero() {
-                    self.phase = Phase::Out;
-                }
-            }
-            Phase::Out => {
-                // center-in Collapse: Panel + Text ziehen sich zur Mitte zusammen
-                // und geben die Welt frei.
-                self.collapse = (self.collapse + dt.as_secs_f32() / COLLAPSE_SECS).min(1.0);
-                if self.collapse >= 1.0 {
-                    return true;
-                }
-            }
+    fn done(&self) -> bool {
+        self.age >= life()
+    }
+
+    /// Breiten-Faktor des Panels: center-out Aufbau, voll, center-in Collapse.
+    fn width_factor(&self) -> f32 {
+        let a = self.age;
+        if a < BUILD {
+            a.as_secs_f32() / BUILD.as_secs_f32()
+        } else if a < life() - COLLAPSE {
+            1.0
+        } else {
+            (1.0 - (a - (life() - COLLAPSE)).as_secs_f32() / COLLAPSE.as_secs_f32()).max(0.0)
         }
-        false
+    }
+
+    fn in_build(&self) -> bool {
+        self.age < BUILD
+    }
+    fn in_collapse(&self) -> bool {
+        self.age >= life() - COLLAPSE
+    }
+    /// Text sichtbar (nach Aufbau, vor Collapse).
+    fn text_visible(&self) -> bool {
+        self.age >= BUILD && !self.in_collapse()
+    }
+    /// Manueller Text-Alpha (nur RenderMode::Manual).
+    fn text_alpha(&self) -> f32 {
+        let a = self.age;
+        if a < BUILD + TEXT {
+            (a.saturating_sub(BUILD)).as_secs_f32() / TEXT.as_secs_f32()
+        } else {
+            1.0
+        }
+    }
+
+    fn full_width(&self, area: Rect) -> u16 {
+        let t = self.title.chars().count() as u16;
+        let d = self.detail.chars().count() as u16;
+        let w = match self.kind {
+            Kind::Info => t + d + 5,
+            _ => t.max(d) + 4,
+        };
+        w.clamp(8, area.width)
     }
 }
 
-// ───────────────────────────── App-State (Companion) ────────────────────────
+// ───────────────────────────── Companion-State ──────────────────────────────
 
 struct State {
-    scene: u8, // 1..=3 Layout-Vorschlag
+    scene: u8,
     frames: bool,
     dir: char,
     combo: u32,
-    in_style: InStyle,
+    mode: RenderMode,
+    reveal: Reveal,
     notifs: Vec<Notif>,
-    notif_seq: usize,
-    notif_card: bool, // true = 3-Zeilen-Karte, false = 1-Zeile kompakt
+    seq: usize,
     inv_open: bool,
     inv_effect: Effect,
     inv_closing: bool,
@@ -221,10 +239,10 @@ impl State {
             frames: false,
             dir: '→',
             combo: 7,
-            in_style: InStyle::Expand,
+            mode: RenderMode::Hybrid,
+            reveal: Reveal::Coalesce,
             notifs: Vec::new(),
-            notif_seq: 0,
-            notif_card: true,
+            seq: 0,
             inv_open: false,
             inv_effect: fx::coalesce((1, Interpolation::Linear)),
             inv_closing: false,
@@ -232,42 +250,37 @@ impl State {
         }
     }
 
-    fn fire_notif(&mut self) {
-        const SAMPLES: &[(&str, &str, Color)] = &[
-            ("⟹  TURNED", "Richtung: Up", theme::ACCENT),
-            ("⟹  STOP", "nächstes Zeichen überschreibt", theme::DANGER),
-            ("✦  PICKUP", "dash ins Inventar gewandert", theme::PICKUP_BASE),
-            ("⚡  COMBO x12", "saubere Kette — weiter so", theme::HIGHLIGHT_BG),
-            ("✓  MERGED", "main is green", theme::ACCENT),
+    fn fire(&mut self) {
+        // Verschiedene Typen rotieren → man sieht gemischtes Stacking.
+        const S: &[(Kind, &str, &str, Color)] = &[
+            (Kind::Info, "⟹  TURNED", "Up", theme::ACCENT),
+            (Kind::Event, "✦  PICKUP", "dash ins Inventar", theme::PICKUP_BASE),
+            (Kind::Info, "⟹  STOP", "next char overwrites", theme::DANGER),
+            (Kind::Major, "✓  MERGED", "main is green", theme::HIGHLIGHT_BG),
+            (Kind::Event, "⚡  COMBO x12", "saubere Kette", theme::ACCENT),
         ];
-        let (title, detail, accent) = SAMPLES[self.notif_seq % SAMPLES.len()];
-        self.notif_seq += 1;
-        self.notifs
-            .push(Notif::new(title, detail, accent, self.in_style));
+        let (kind, title, detail, accent) = S[self.seq % S.len()];
+        self.seq += 1;
+        self.notifs.push(Notif::new(kind, title, detail, accent));
     }
 
     fn toggle_inventory(&mut self) {
         if self.inv_open && !self.inv_closing {
-            // schließen → dissolve
             self.inv_effect = fx::dissolve((400, Interpolation::SineIn));
             self.inv_closing = true;
         } else {
             self.inv_open = true;
             self.inv_closing = false;
-            self.inv_effect = self.in_style.effect(theme::ACCENT);
+            self.inv_effect = fx::coalesce((400, Interpolation::SineOut));
         }
     }
 
     fn update(&mut self, dt: Duration) {
         self.frame = self.frame.wrapping_add(1);
-        let mut i = 0;
-        while i < self.notifs.len() {
-            if self.notifs[i].update(dt) {
-                self.notifs.remove(i);
-            } else {
-                i += 1;
-            }
+        for n in &mut self.notifs {
+            n.age += dt;
         }
+        self.notifs.retain(|n| !n.done());
         if self.inv_closing && self.inv_effect.done() {
             self.inv_open = false;
             self.inv_closing = false;
@@ -275,7 +288,7 @@ impl State {
     }
 }
 
-// ───────────────────────────── Rendering ────────────────────────────────────
+// ───────────────────────────── main / loop ──────────────────────────────────
 
 fn main() -> io::Result<()> {
     enable_raw_mode()?;
@@ -292,7 +305,6 @@ fn main() -> io::Result<()> {
         let dt = last.elapsed();
         last = Instant::now();
         state.update(dt);
-
         terminal.draw(|f| ui(f, &mut state, dt))?;
 
         if event::poll(Duration::from_millis(16))? {
@@ -303,12 +315,11 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('1') => state.scene = 1,
                         KeyCode::Char('2') => state.scene = 2,
                         KeyCode::Char('3') => state.scene = 3,
-                        KeyCode::Char('n') => state.fire_notif(),
-                        KeyCode::Char('i') => state.in_style = state.in_style.next(),
+                        KeyCode::Char('n') => state.fire(),
+                        KeyCode::Char('m') => state.mode = state.mode.next(),
+                        KeyCode::Char('i') => state.reveal = state.reveal.next(),
                         KeyCode::Char('v') => state.toggle_inventory(),
-                        KeyCode::Char('b') => state.notif_card = !state.notif_card,
                         KeyCode::Char('f') => state.frames = !state.frames,
-                        KeyCode::Char('c') => state.combo += 1,
                         KeyCode::Up => state.dir = '↑',
                         KeyCode::Down => state.dir = '↓',
                         KeyCode::Left => state.dir = '←',
@@ -328,31 +339,150 @@ fn main() -> io::Result<()> {
 
 fn ui(f: &mut Frame, state: &mut State, dt: Duration) {
     let area = f.area();
-
-    // 1) full-screen „Welt" als scrollender Code-Hintergrund.
     draw_world_bg(f.buffer_mut(), area, state.frame);
-
-    // 2) HUD-Chrome je nach Layout-Vorschlag.
     match state.scene {
         2 => layout_bottom_strip(f, area, state),
         3 => layout_diegetic(f, area, state),
         _ => layout_corners(f, area, state),
     }
-
-    // 3) Notification-Stack (oben-mitte), schwebt über der Welt.
     draw_notifications(f, area, state, dt);
-
-    // 4) Inventar-Overlay-Demo (Center).
     if state.inv_open {
         draw_inventory(f, area, state, dt);
     }
-
-    // 5) Companion-Steuerleiste (nur Companion, nicht Teil des Konzepts).
     draw_help(f, area, state);
 }
 
-/// Scrollender, dezenter Code-Teppich, damit man Overlays *über bewegtem Inhalt*
-/// schweben sieht. Rein deterministisch aus (x, y, frame).
+// ───────────────────────────── Notification-Render ──────────────────────────
+
+fn draw_notifications(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
+    let mode = state.mode;
+    let reveal = state.reveal;
+    let mut y = area.top().saturating_add(1);
+    for n in state.notifs.iter_mut() {
+        let h = n.kind.height();
+        if y + h >= area.bottom() {
+            break;
+        }
+        draw_one(f, area, n, y, mode, reveal, dt);
+        y = y.saturating_add(h + 1);
+    }
+}
+
+fn draw_one(
+    f: &mut Frame,
+    area: Rect,
+    n: &mut Notif,
+    top: u16,
+    mode: RenderMode,
+    reveal: Reveal,
+    dt: Duration,
+) {
+    let h = n.kind.height();
+    let full_w = n.full_width(area);
+    let factor = n.width_factor();
+    if factor <= 0.01 {
+        return;
+    }
+
+    // full-fx: Panel-Aufbau über tachyonfx expand (Block-Charakter, ehrlich
+    // sichtbar). Sonst manuelle center-out-Geometrie.
+    let fx_panel = mode == RenderMode::FullFx && n.in_build();
+    let w = if fx_panel {
+        full_w // expand füllt selbst von der Mitte
+    } else {
+        ((full_w as f32 * factor).round() as u16).clamp(1, full_w)
+    };
+    let x = area.left() + area.width.saturating_sub(w) / 2;
+    let rect = Rect { x, y: top, width: w, height: h };
+
+    // Panel-Hintergrund.
+    paint_panel(f.buffer_mut(), rect);
+
+    if fx_panel {
+        // expand-Effekt lazy anlegen, über das volle Rect prozessieren.
+        if n.panel_fx.is_none() {
+            n.panel_fx = Some(fx::expand(
+                ExpandDirection::Horizontal,
+                Style::default().bg(theme::PANEL_BG),
+                (BUILD.as_millis() as u32, Interpolation::CircOut),
+            ));
+        }
+        if let Some(e) = n.panel_fx.as_mut() {
+            e.process(dt.into(), f.buffer_mut(), Rect { x: area.left() + area.width.saturating_sub(full_w) / 2, y: top, width: full_w, height: h });
+        }
+        return; // während Aufbau noch kein Text
+    }
+
+    if n.in_build() {
+        return; // manueller Aufbau: nur Bg, kein Text
+    }
+
+    // ── Text ──
+    if !n.text_visible() {
+        return; // im Collapse: nur schrumpfendes Bg, kein Text
+    }
+
+    if mode.uses_fx_text() {
+        // Vollfarbigen Text setzen, dann tachyonfx-Reveal drüber laufen lassen.
+        render_text(f.buffer_mut(), rect, n, 1.0);
+        if !n.fx_inited {
+            n.text_fx = Some(reveal.effect(TEXT.as_millis() as u32));
+            n.fx_inited = true;
+        }
+        if let Some(e) = n.text_fx.as_mut() {
+            if !e.done() {
+                e.process(dt.into(), f.buffer_mut(), rect);
+            }
+        }
+    } else {
+        // manuell: Farb-Lerp aus dem Panel-Grau.
+        render_text(f.buffer_mut(), rect, n, n.text_alpha());
+    }
+}
+
+fn paint_panel(buf: &mut Buffer, rect: Rect) {
+    for yy in rect.top()..rect.bottom() {
+        for xx in rect.left()..rect.right() {
+            if let Some(cell) = buf.cell_mut((xx, yy)) {
+                cell.reset();
+                cell.set_bg(theme::PANEL_BG);
+            }
+        }
+    }
+}
+
+/// Zeichnet Titel+Detail mittig. `alpha` blendet aus dem Panel-Grau (für den
+/// manuellen Modus); bei 1.0 voll farbig (fx-Modi setzen so + animieren drüber).
+fn render_text(buf: &mut Buffer, rect: Rect, n: &Notif, alpha: f32) {
+    let title_fg = lerp(theme::PANEL_BG, n.accent, alpha);
+    let detail_fg = lerp(theme::PANEL_BG, theme::TEXT, alpha);
+    if n.kind == Kind::Info {
+        let line = Line::from(vec![
+            Span::styled(
+                format!("{} ", n.title),
+                Style::default().fg(title_fg).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(n.detail.clone(), Style::default().fg(detail_fg).bg(theme::PANEL_BG)),
+        ]);
+        Paragraph::new(line).alignment(Alignment::Center).render(rect, buf);
+    } else {
+        Paragraph::new(Span::styled(
+            n.title.clone(),
+            Style::default().fg(title_fg).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD),
+        ))
+        .alignment(Alignment::Center)
+        .render(Rect { y: rect.y + 1, height: 1, ..rect }, buf);
+        Paragraph::new(Span::styled(
+            n.detail.clone(),
+            Style::default().fg(detail_fg).bg(theme::PANEL_BG),
+        ))
+        .alignment(Alignment::Center)
+        .render(Rect { y: rect.y + 2, height: 1, ..rect }, buf);
+    }
+}
+
+// ───────────────────────────── Welt + Layouts ───────────────────────────────
+
 fn draw_world_bg(buf: &mut Buffer, area: Rect, frame: u64) {
     const GLYPHS: &[char] = &[
         'a', 'b', 'c', 'd', 'e', 'f', 'i', 'l', 'n', 'o', 'r', 's', 't', '(', ')', '{', '}', ';',
@@ -366,7 +496,7 @@ fn draw_world_bg(buf: &mut Buffer, area: Rect, frame: u64) {
                 .wrapping_mul(2_654_435_761)
                 .wrapping_add((y as u64).wrapping_mul(40_503));
             if !h.is_multiple_of(6) {
-                continue; // dünn besät
+                continue;
             }
             if let Some(cell) = buf.cell_mut((x, y)) {
                 let g = GLYPHS[(h / 6) as usize % GLYPHS.len()];
@@ -377,29 +507,13 @@ fn draw_world_bg(buf: &mut Buffer, area: Rect, frame: u64) {
     }
 }
 
-// ── Layout 1: Ecken-HUD ──────────────────────────────────────────────────────
 fn layout_corners(f: &mut Frame, area: Rect, state: &State) {
     chip(f, anchor_rect(area, Anchor::TopLeft, 9, 1), "dir", &state.dir.to_string(), state.frames);
-    chip(
-        f,
-        anchor_rect(area, Anchor::TopRight, 12, 1),
-        "combo",
-        &format!("x{}", state.combo),
-        state.frames,
-    );
-    // Cursor-Marker mittig (repräsentiert den Spieler in der full-screen-Welt).
-    let c = anchor_rect(area, Anchor::Center, 1, 1);
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            state.dir.to_string(),
-            Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
-        )),
-        c,
-    );
-    players_strip(f, anchor_rect(area, Anchor::BottomLeft, 30, 1), state.frames);
+    chip(f, anchor_rect(area, Anchor::TopRight, 12, 1), "combo", &format!("x{}", state.combo), state.frames);
+    cursor_marker(f, area, state.dir);
+    players_strip(f, anchor_rect(area, Anchor::BottomLeft, 30, 1));
 }
 
-// ── Layout 2: Bottom-Status-Strip ────────────────────────────────────────────
 fn layout_bottom_strip(f: &mut Frame, area: Rect, state: &State) {
     let rect = anchor_rect(area, Anchor::BottomCenter, area.width.min(60), 1);
     let line = Line::from(vec![
@@ -410,20 +524,10 @@ fn layout_bottom_strip(f: &mut Frame, area: Rect, state: &State) {
         Span::styled("  you", Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled("(du) rival ", Style::default().fg(theme::TEXT_DIM)),
     ]);
-    let p = Paragraph::new(line).style(Style::default().bg(theme::PANEL_BG));
-    f.render_widget(p, rect);
-    let c = anchor_rect(area, Anchor::Center, 1, 1);
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            state.dir.to_string(),
-            Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
-        )),
-        c,
-    );
+    f.render_widget(Paragraph::new(line).style(Style::default().bg(theme::PANEL_BG)), rect);
+    cursor_marker(f, area, state.dir);
 }
 
-// ── Layout 3: minimal / diegetisch ───────────────────────────────────────────
-// Kein Chrome — nur ein schwebender Akzent am Cursor + winziger combo-Tick.
 fn layout_diegetic(f: &mut Frame, area: Rect, state: &State) {
     let c = anchor_rect(area, Anchor::Center, 3, 1);
     f.render_widget(
@@ -434,16 +538,22 @@ fn layout_diegetic(f: &mut Frame, area: Rect, state: &State) {
         c,
     );
     if state.combo > 1 {
-        let tick = anchor_rect(area, Anchor::TopCenter, 6, 1);
-        let tick = Rect { y: tick.y, ..tick };
         f.render_widget(
-            Paragraph::new(Span::styled(
-                format!("x{}", state.combo),
-                Style::default().fg(theme::TEXT_DIM),
-            )),
-            Rect { x: tick.x, y: area.bottom().saturating_sub(1), width: 6, height: 1 },
+            Paragraph::new(Span::styled(format!("x{}", state.combo), Style::default().fg(theme::TEXT_DIM))),
+            Rect { x: area.left() + area.width / 2 - 3, y: area.bottom().saturating_sub(1), width: 6, height: 1 },
         );
     }
+}
+
+fn cursor_marker(f: &mut Frame, area: Rect, dir: char) {
+    let c = anchor_rect(area, Anchor::Center, 1, 1);
+    f.render_widget(
+        Paragraph::new(Span::styled(
+            dir.to_string(),
+            Style::default().fg(Color::Black).bg(Color::Yellow).add_modifier(Modifier::BOLD),
+        )),
+        c,
+    );
 }
 
 fn chip(f: &mut Frame, rect: Rect, key: &str, val: &str, frames: bool) {
@@ -462,92 +572,13 @@ fn chip(f: &mut Frame, rect: Rect, key: &str, val: &str, frames: bool) {
     f.render_widget(Paragraph::new(line), inner);
 }
 
-fn players_strip(f: &mut Frame, rect: Rect, _frames: bool) {
+fn players_strip(f: &mut Frame, rect: Rect) {
     let line = Line::from(vec![
         Span::styled("you", Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled("(du) ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled("rival ", Style::default().fg(Color::Rgb(0x8A, 0xE2, 0x34)).add_modifier(Modifier::BOLD)),
     ]);
     f.render_widget(Paragraph::new(line), rect);
-}
-
-/// Notification-Stack: oben-mitte, neuste oben, vertikal gestapelt. Mittig
-/// zentriert, kein Akzent-Balken. Das Panel wächst center-out rein und zieht
-/// sich center-in raus (Bg + Text gemeinsam) — die Welt darunter wird frei.
-fn draw_notifications(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
-    let card = state.notif_card;
-    let h: u16 = if card { 3 } else { 1 };
-    let mut y = area.top() + 1;
-    for n in state.notifs.iter_mut() {
-        let title_w = n.title.chars().count() as u16;
-        let detail_w = n.detail.chars().count() as u16;
-        let full_w = if card {
-            (title_w.max(detail_w) + 4).clamp(16, area.width)
-        } else {
-            (title_w + detail_w + 5).min(area.width)
-        };
-
-        // Breiten-Faktor: Aufbau (rein) oder Collapse (raus), sonst voll.
-        let building = n.expand_in && matches!(n.phase, Phase::In) && n.build < 1.0;
-        let factor = if building {
-            n.build
-        } else if matches!(n.phase, Phase::Out) {
-            (1.0 - n.collapse).max(0.0)
-        } else {
-            1.0
-        };
-
-        if factor > 0.01 {
-            let w = ((full_w as f32 * factor).round() as u16).clamp(1, full_w);
-            let x = area.left() + (area.width.saturating_sub(w)) / 2;
-            let rect = Rect { x, y, width: w, height: h };
-
-            // Panel-Hintergrund (zentriert, schrumpft/wächst mit factor).
-            f.render_widget(Clear, rect);
-            f.render_widget(
-                Paragraph::new(vec![Line::from(""); h as usize]).style(Style::default().bg(theme::PANEL_BG)),
-                rect,
-            );
-
-            // Text nur, wenn das Panel nicht gerade erst aufbaut (erst Bg, dann Text).
-            if !building {
-                let title = Paragraph::new(Span::styled(
-                    n.title.clone(),
-                    Style::default().fg(n.accent).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD),
-                ))
-                .alignment(Alignment::Center);
-                let detail = Paragraph::new(Span::styled(
-                    n.detail.clone(),
-                    Style::default().fg(theme::TEXT).bg(theme::PANEL_BG),
-                ))
-                .alignment(Alignment::Center);
-                if card {
-                    f.render_widget(title, Rect { y: rect.y + 1, height: 1, ..rect });
-                    f.render_widget(detail, Rect { y: rect.y + 2, height: 1, ..rect });
-                } else {
-                    // kompakt: Titel + Detail in einer zentrierten Zeile.
-                    let p = Paragraph::new(Line::from(vec![
-                        Span::styled(
-                            format!("{} ", n.title),
-                            Style::default().fg(n.accent).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(n.detail.clone(), Style::default().fg(theme::TEXT).bg(theme::PANEL_BG)),
-                    ]))
-                    .alignment(Alignment::Center);
-                    f.render_widget(p, rect);
-                }
-                // Text-Enthüllung (fade/evolve) nur während der In-Phase.
-                if matches!(n.phase, Phase::In) {
-                    n.effect.process(dt.into(), f.buffer_mut(), rect);
-                }
-            }
-        }
-
-        y = y.saturating_add(h + 1);
-        if y >= area.bottom() {
-            break;
-        }
-    }
 }
 
 fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
@@ -559,7 +590,6 @@ fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
         .title(" inventory ");
     let inner = block.inner(rect);
     f.render_widget(block, rect);
-
     let rows = [
         ("dash", "schärft Richtungs-Sprint"),
         ("revert", "macht letzten Zug rückgängig"),
@@ -575,26 +605,23 @@ fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
         })
         .collect();
     f.render_widget(Paragraph::new(lines).style(Style::default().bg(theme::PANEL_BG)), inner);
-
     state.inv_effect.process(dt.into(), f.buffer_mut(), rect);
 }
 
 fn draw_help(f: &mut Frame, area: Rect, state: &State) {
     let scene = match state.scene {
-        2 => "2:bottom-strip",
+        2 => "2:strip",
         3 => "3:diegetic",
         _ => "1:corners",
     };
+    let reveal_dim = if state.mode.uses_fx_text() { theme::TEXT } else { theme::TEXT_DIM };
     let line = Line::from(vec![
         Span::styled(" hud_lab ", Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD)),
         Span::styled(format!(" {scene} "), Style::default().fg(theme::ACCENT)),
-        Span::styled("│ 1/2/3 layout · n notif · ", Style::default().fg(theme::TEXT_DIM)),
-        Span::styled(format!("i in:{} ", state.in_style.label()), Style::default().fg(theme::TEXT)),
-        Span::styled(
-            format!("b size:{} ", if state.notif_card { "card" } else { "compact" }),
-            Style::default().fg(theme::TEXT),
-        ),
-        Span::styled("· v inv · f frames · ←↑↓→ dir · q quit", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled("│ n notif · ", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled(format!("m mode:{} ", state.mode.label()), Style::default().fg(theme::HIGHLIGHT_BG).add_modifier(Modifier::BOLD)),
+        Span::styled(format!("i reveal:{} ", state.reveal.label()), Style::default().fg(reveal_dim)),
+        Span::styled("· 1/2/3 layout · v inv · f frames · q quit", Style::default().fg(theme::TEXT_DIM)),
     ]);
     let rect = Rect { x: area.left(), y: area.bottom().saturating_sub(1), width: area.width, height: 1 };
     f.render_widget(Paragraph::new(line).style(Style::default().bg(Color::Rgb(0x18, 0x18, 0x1C))), rect);
