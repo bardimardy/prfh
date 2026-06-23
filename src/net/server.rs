@@ -245,12 +245,12 @@ impl HostState {
     }
 
     /// Advance visual state by one tick; returns any messages to broadcast
-    /// (currently only `Respawned` events).
+    /// (`Respawned` events). Trail trimming is local and needs no network sync.
     pub fn tick_visuals(&mut self) -> Vec<ServerMsg> {
+        let mut msgs = Vec::new();
         for p in self.players.values_mut() {
             p.engine.tick_visuals();
         }
-        let mut msgs = Vec::new();
         let expired: Vec<PlayerId> = self
             .dead_ticks
             .iter_mut()

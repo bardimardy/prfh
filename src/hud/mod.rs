@@ -35,10 +35,18 @@ pub fn anchor_rect(area: Rect, anchor: Anchor, w: u16, h: u16) -> Rect {
         Anchor::TopRight => (area.right().saturating_sub(w), area.top()),
         Anchor::BottomLeft => (area.left(), area.bottom().saturating_sub(h)),
         Anchor::BottomCenter => (cx, area.bottom().saturating_sub(h)),
-        Anchor::BottomRight => (area.right().saturating_sub(w), area.bottom().saturating_sub(h)),
+        Anchor::BottomRight => (
+            area.right().saturating_sub(w),
+            area.bottom().saturating_sub(h),
+        ),
         Anchor::Center => (cx, cy),
     };
-    Rect { x, y, width: w, height: h }
+    Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    }
 }
 
 #[cfg(test)]
@@ -48,12 +56,30 @@ mod tests {
     #[test]
     fn anchors_land_in_corners_and_center() {
         let a = Rect::new(0, 0, 100, 40);
-        assert_eq!(anchor_rect(a, Anchor::TopLeft, 10, 2), Rect::new(0, 0, 10, 2));
-        assert_eq!(anchor_rect(a, Anchor::TopRight, 10, 2), Rect::new(90, 0, 10, 2));
-        assert_eq!(anchor_rect(a, Anchor::BottomLeft, 10, 2), Rect::new(0, 38, 10, 2));
-        assert_eq!(anchor_rect(a, Anchor::BottomRight, 10, 2), Rect::new(90, 38, 10, 2));
-        assert_eq!(anchor_rect(a, Anchor::Center, 10, 2), Rect::new(45, 19, 10, 2));
-        assert_eq!(anchor_rect(a, Anchor::TopCenter, 10, 2), Rect::new(45, 0, 10, 2));
+        assert_eq!(
+            anchor_rect(a, Anchor::TopLeft, 10, 2),
+            Rect::new(0, 0, 10, 2)
+        );
+        assert_eq!(
+            anchor_rect(a, Anchor::TopRight, 10, 2),
+            Rect::new(90, 0, 10, 2)
+        );
+        assert_eq!(
+            anchor_rect(a, Anchor::BottomLeft, 10, 2),
+            Rect::new(0, 38, 10, 2)
+        );
+        assert_eq!(
+            anchor_rect(a, Anchor::BottomRight, 10, 2),
+            Rect::new(90, 38, 10, 2)
+        );
+        assert_eq!(
+            anchor_rect(a, Anchor::Center, 10, 2),
+            Rect::new(45, 19, 10, 2)
+        );
+        assert_eq!(
+            anchor_rect(a, Anchor::TopCenter, 10, 2),
+            Rect::new(45, 0, 10, 2)
+        );
     }
 
     #[test]

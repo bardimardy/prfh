@@ -170,10 +170,12 @@ impl WorldView {
                 glow_len,
             } => {
                 if let Some(p) = self.player_mut(id) {
-                    p.push_tile(tile);
+                    crate::game::writing::pace_bump(&mut p.pace);
+                    let mut t = tile;
+                    t.written_pace = p.pace;
+                    p.push_tile(t);
                     p.cursor = cursor;
                     p.direction = direction;
-                    crate::game::writing::pace_bump(&mut p.pace);
                     let n = p.trail.len();
                     let start = n.saturating_sub(glow_len as usize);
                     for t in &mut p.trail[start..n] {
@@ -236,6 +238,7 @@ mod tests {
                 tick: i as u64,
                 glow: 0,
                 brightness: crate::game::writing::TILE_MAX_BRIGHTNESS,
+                written_pace: 0.0,
             });
         }
         assert_eq!(p.trail.len(), TRAIL_CAP);
@@ -252,6 +255,7 @@ mod tests {
             tick: 0,
             glow: GLOW_TICKS,
             brightness: crate::game::writing::TILE_MAX_BRIGHTNESS,
+            written_pace: 0.0,
         });
         w.tick_visuals();
         assert_eq!(w.players[0].trail[0].glow, GLOW_TICKS - 1);
@@ -295,6 +299,7 @@ mod tests {
                 tick: 0,
                 glow: 0,
                 brightness: crate::game::writing::TILE_MAX_BRIGHTNESS,
+                written_pace: 0.0,
             },
             cursor: (1, 0),
             direction: Direction::Right,
@@ -308,6 +313,7 @@ mod tests {
                 tick: 1,
                 glow: 0,
                 brightness: crate::game::writing::TILE_MAX_BRIGHTNESS,
+                written_pace: 0.0,
             },
             cursor: (2, 0),
             direction: Direction::Up,
@@ -331,6 +337,7 @@ mod tests {
             tick: 0,
             glow: 0,
             brightness: crate::game::writing::TILE_MAX_BRIGHTNESS,
+            written_pace: 0.0,
         });
         w.apply(ServerMsg::Erased {
             id: 1,
@@ -354,16 +361,24 @@ mod tests {
                     tick: i as u64,
                     glow: 0,
                     brightness: TILE_MAX_BRIGHTNESS,
+                    written_pace: 0.0,
                 });
             }
         }
         w.tick_visuals();
         let p = &w.players[0];
-        // Client trims to the pace-derived window with no network removal message.
-        assert_eq!(p.trail.len(), visible_len_for_pace(p.pace));
-        // And the multiplayer trail now actually fades.
-        assert_eq!(p.trail.last().unwrap().brightness, TILE_MAX_BRIGHTNESS);
-        assert!(p.trail.first().unwrap().brightness < TILE_MAX_BRIGHTNESS);
+        let vl = visible_len_for_pace(p.pace);
+        // Exactly visible_len tiles at full brightness; extras are fading out.
+        let full = p
+            .trail
+            .iter()
+            .filter(|t| t.brightness == TILE_MAX_BRIGHTNESS)
+            .count();
+        assert_eq!(full, vl, "exactly visible_len tiles at full brightness");
+        assert!(
+            p.trail.iter().all(|t| t.brightness > 0),
+            "no invisible tiles remain"
+        );
     }
 
     #[test]
@@ -379,6 +394,7 @@ mod tests {
                 tick: 0,
                 glow: 0,
                 brightness: crate::game::writing::TILE_MAX_BRIGHTNESS,
+                written_pace: 0.0,
             },
             cursor: (1, 0),
             direction: Direction::Right,

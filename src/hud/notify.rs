@@ -126,7 +126,12 @@ impl Notification {
         }
         let w = ((full_w as f32 * factor).round() as u16).clamp(1, full_w);
         let x = area.left() + area.width.saturating_sub(w) / 2;
-        let rect = Rect { x, y: top, width: w, height: h };
+        let rect = Rect {
+            x,
+            y: top,
+            width: w,
+            height: h,
+        };
 
         // Panel-Hintergrund: Welt darunter verdecken + Panel-BG füllen.
         for yy in rect.top()..rect.bottom() {
@@ -143,7 +148,12 @@ impl Notification {
             let fx = self
                 .panel_fx
                 .get_or_insert_with(|| effects::notify_panel(BUILD.as_millis() as u32));
-            let full_rect = Rect { x: area.left() + area.width.saturating_sub(full_w) / 2, y: top, width: full_w, height: h };
+            let full_rect = Rect {
+                x: area.left() + area.width.saturating_sub(full_w) / 2,
+                y: top,
+                width: full_w,
+                height: h,
+            };
             fx.process(elapsed.into(), buf, full_rect);
             return;
         }
@@ -163,21 +173,33 @@ impl Notification {
     }
 
     fn render_text(&self, buf: &mut Buffer, rect: Rect) {
-        let title_style = Style::default().fg(self.accent).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD);
+        let title_style = Style::default()
+            .fg(self.accent)
+            .bg(theme::PANEL_BG)
+            .add_modifier(Modifier::BOLD);
         let detail_style = Style::default().fg(theme::TEXT).bg(theme::PANEL_BG);
         if self.kind == NotifyKind::Info {
             let line = Line::from(vec![
                 Span::styled(format!("{} ", self.title), title_style),
                 Span::styled(self.detail.clone(), detail_style),
             ]);
-            Paragraph::new(line).alignment(Alignment::Center).render(rect, buf);
+            Paragraph::new(line)
+                .alignment(Alignment::Center)
+                .render(rect, buf);
         } else {
             Paragraph::new(Span::styled(self.title.clone(), title_style))
                 .alignment(Alignment::Center)
                 .render(Rect { height: 1, ..rect }, buf);
             Paragraph::new(Span::styled(self.detail.clone(), detail_style))
                 .alignment(Alignment::Center)
-                .render(Rect { y: rect.y + 1, height: 1, ..rect }, buf);
+                .render(
+                    Rect {
+                        y: rect.y + 1,
+                        height: 1,
+                        ..rect
+                    },
+                    buf,
+                );
         }
     }
 }
@@ -307,6 +329,9 @@ mod tests {
         // coalesce kann einzelne Zellen noch streuen; nach genug Zeit steht der Text.
         s.render(&mut buf, area, TEXT);
         let dump: String = buf.content().iter().map(|c| c.symbol()).collect();
-        assert!(dump.contains("PICKUP"), "Titel sollte sichtbar sein: {dump:?}");
+        assert!(
+            dump.contains("PICKUP"),
+            "Titel sollte sichtbar sein: {dump:?}"
+        );
     }
 }
