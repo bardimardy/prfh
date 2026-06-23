@@ -105,34 +105,40 @@ impl InStyle {
 
 #[derive(Clone, Copy, PartialEq)]
 enum OutStyle {
-    Dissolve,
     DissolveTo,
     Sweep,
+    SweepThenDissolve,
+    Dissolve,
 }
 impl OutStyle {
     fn label(self) -> &'static str {
         match self {
-            OutStyle::Dissolve => "dissolve",
             OutStyle::DissolveTo => "dissolve_to",
             OutStyle::Sweep => "sweep_out",
+            OutStyle::SweepThenDissolve => "sweep→dissolve",
+            OutStyle::Dissolve => "dissolve",
         }
     }
     fn next(self) -> Self {
         match self {
-            OutStyle::Dissolve => OutStyle::DissolveTo,
             OutStyle::DissolveTo => OutStyle::Sweep,
-            OutStyle::Sweep => OutStyle::Dissolve,
+            OutStyle::Sweep => OutStyle::SweepThenDissolve,
+            OutStyle::SweepThenDissolve => OutStyle::Dissolve,
+            OutStyle::Dissolve => OutStyle::DissolveTo,
         }
     }
     fn effect(self) -> Effect {
+        let to_panel = Style::default().bg(theme::PANEL_BG);
         match self {
-            OutStyle::Dissolve => fx::dissolve((550, Interpolation::SineIn)),
-            OutStyle::DissolveTo => {
-                fx::dissolve_to(Style::default().bg(theme::PANEL_BG), (550, Interpolation::SineIn))
-            }
+            OutStyle::DissolveTo => fx::dissolve_to(to_panel, (550, Interpolation::SineIn)),
             OutStyle::Sweep => {
                 fx::sweep_out(Motion::LeftToRight, 8, 0, theme::PANEL_BG, (550, Interpolation::SineIn))
             }
+            OutStyle::SweepThenDissolve => fx::sequence(&[
+                fx::sweep_out(Motion::LeftToRight, 6, 0, theme::PANEL_BG, (320, Interpolation::SineIn)),
+                fx::dissolve_to(to_panel, (320, Interpolation::SineIn)),
+            ]),
+            OutStyle::Dissolve => fx::dissolve((550, Interpolation::SineIn)),
         }
     }
 }
@@ -146,7 +152,8 @@ enum Phase {
 /// Eine schwebende Quick-Notification: rein-animieren → kurz halten →
 /// raus-animieren. Genau die Mechanik, die `App::trigger_banner` ersetzt.
 struct Notif {
-    text: String,
+    title: String,
+    detail: String,
     accent: Color,
     phase: Phase,
     effect: Effect,
@@ -155,14 +162,21 @@ struct Notif {
 }
 
 impl Notif {
-    fn new(text: impl Into<String>, accent: Color, in_style: InStyle, out_style: OutStyle) -> Self {
+    fn new(
+        title: impl Into<String>,
+        detail: impl Into<String>,
+        accent: Color,
+        in_style: InStyle,
+        out_style: OutStyle,
+    ) -> Self {
         Self {
-            text: text.into(),
+            title: title.into(),
+            detail: detail.into(),
             accent,
             phase: Phase::In,
             effect: in_style.effect(),
             out_style,
-            hold_left: Duration::from_millis(1400),
+            hold_left: Duration::from_millis(1600),
         }
     }
 
@@ -204,6 +218,7 @@ struct State {
     out_style: OutStyle,
     notifs: Vec<Notif>,
     notif_seq: usize,
+    notif_card: bool, // true = 3-Zeilen-Karte, false = 1-Zeile kompakt
     inv_open: bool,
     inv_effect: Effect,
     inv_closing: bool,
@@ -221,6 +236,7 @@ impl State {
             out_style: OutStyle::DissolveTo,
             notifs: Vec::new(),
             notif_seq: 0,
+            notif_card: true,
             inv_open: false,
             inv_effect: fx::coalesce((1, Interpolation::Linear)),
             inv_closing: false,
@@ -229,17 +245,17 @@ impl State {
     }
 
     fn fire_notif(&mut self) {
-        const SAMPLES: &[(&str, Color)] = &[
-            ("⟹ TURNED: Up", theme::ACCENT),
-            ("⟹ STOP — next char overwrites", theme::DANGER),
-            ("✦ PICKUP: dash", theme::PICKUP_BASE),
-            ("⚡ COMBO x12", theme::HIGHLIGHT_BG),
-            ("✓ MERGED — main is green", theme::ACCENT),
+        const SAMPLES: &[(&str, &str, Color)] = &[
+            ("⟹  TURNED", "Richtung: Up", theme::ACCENT),
+            ("⟹  STOP", "nächstes Zeichen überschreibt", theme::DANGER),
+            ("✦  PICKUP", "dash ins Inventar gewandert", theme::PICKUP_BASE),
+            ("⚡  COMBO x12", "saubere Kette — weiter so", theme::HIGHLIGHT_BG),
+            ("✓  MERGED", "main is green", theme::ACCENT),
         ];
-        let (text, accent) = SAMPLES[self.notif_seq % SAMPLES.len()];
+        let (title, detail, accent) = SAMPLES[self.notif_seq % SAMPLES.len()];
         self.notif_seq += 1;
         self.notifs
-            .push(Notif::new(text, accent, self.in_style, self.out_style));
+            .push(Notif::new(title, detail, accent, self.in_style, self.out_style));
     }
 
     fn toggle_inventory(&mut self) {
@@ -303,6 +319,7 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('i') => state.in_style = state.in_style.next(),
                         KeyCode::Char('o') => state.out_style = state.out_style.next(),
                         KeyCode::Char('v') => state.toggle_inventory(),
+                        KeyCode::Char('b') => state.notif_card = !state.notif_card,
                         KeyCode::Char('f') => state.frames = !state.frames,
                         KeyCode::Char('c') => state.combo += 1,
                         KeyCode::Up => state.dir = '↑',
@@ -471,20 +488,65 @@ fn players_strip(f: &mut Frame, rect: Rect, _frames: bool) {
 /// Notification rendert erst ihren echten Text, dann läuft ihr Effekt über
 /// genau ihr Rect (per-Notification `Effect::process`).
 fn draw_notifications(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
+    let card = state.notif_card;
+    let h: u16 = if card { 3 } else { 1 };
     let mut y = area.top() + 1;
     for n in state.notifs.iter_mut() {
-        let w = (n.text.chars().count() as u16 + 2).min(area.width);
+        let content_w = n.title.chars().count().max(n.detail.chars().count()) as u16;
+        // Karte: Akzent-Balken (1) + Inset (1) + Inhalt + Inset (1).
+        let w = if card {
+            (content_w + 4).clamp(16, area.width)
+        } else {
+            (n.title.chars().count() as u16 + n.detail.chars().count() as u16 + 5).min(area.width)
+        };
         let x = area.left() + (area.width.saturating_sub(w)) / 2;
-        let rect = Rect { x, y, width: w, height: 1 };
+        let rect = Rect { x, y, width: w, height: h };
 
-        let p = Paragraph::new(Line::from(Span::styled(
-            format!(" {} ", n.text),
-            Style::default().fg(n.accent).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD),
-        )));
-        f.render_widget(p, rect);
+        if card {
+            // Solider Panel-Block (frameless) + vertikaler Akzent-Balken links.
+            f.render_widget(Clear, rect);
+            let bg = Paragraph::new(vec![Line::from(""); h as usize])
+                .style(Style::default().bg(theme::PANEL_BG));
+            f.render_widget(bg, rect);
+            let bar = Rect { width: 1, ..rect };
+            f.render_widget(
+                Paragraph::new(vec![Line::from("▌"); h as usize]).style(Style::default().fg(n.accent)),
+                bar,
+            );
+            let text_rect = Rect {
+                x: rect.x + 2,
+                y: rect.y,
+                width: rect.width.saturating_sub(3),
+                height: h,
+            };
+            let lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    n.title.clone(),
+                    Style::default().fg(n.accent).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    n.detail.clone(),
+                    Style::default().fg(theme::TEXT).bg(theme::PANEL_BG),
+                )),
+            ];
+            f.render_widget(Paragraph::new(lines).style(Style::default().bg(theme::PANEL_BG)), text_rect);
+        } else {
+            let p = Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!(" {} ", n.title),
+                    Style::default().fg(n.accent).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("{} ", n.detail),
+                    Style::default().fg(theme::TEXT).bg(theme::PANEL_BG),
+                ),
+            ]));
+            f.render_widget(p, rect);
+        }
         n.effect.process(dt.into(), f.buffer_mut(), rect);
 
-        y = y.saturating_add(2);
+        y = y.saturating_add(h + 1);
         if y >= area.bottom() {
             break;
         }
@@ -532,7 +594,11 @@ fn draw_help(f: &mut Frame, area: Rect, state: &State) {
         Span::styled("│ 1/2/3 layout · n notif · ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(format!("i in:{} ", state.in_style.label()), Style::default().fg(theme::TEXT)),
         Span::styled(format!("o out:{} ", state.out_style.label()), Style::default().fg(theme::TEXT)),
-        Span::styled("· v inv · f frames · ←↑↓→ dir · c combo · q quit", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled(
+            format!("b size:{} ", if state.notif_card { "card" } else { "compact" }),
+            Style::default().fg(theme::TEXT),
+        ),
+        Span::styled("· v inv · f frames · ←↑↓→ dir · q quit", Style::default().fg(theme::TEXT_DIM)),
     ]);
     let rect = Rect { x: area.left(), y: area.bottom().saturating_sub(1), width: area.width, height: 1 };
     f.render_widget(Paragraph::new(line).style(Style::default().bg(Color::Rgb(0x18, 0x18, 0x1C))), rect);
