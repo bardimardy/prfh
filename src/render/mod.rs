@@ -1,10 +1,11 @@
 use crate::app::App;
 use crate::game::world::WorldView;
 use crate::game::writing::Direction;
+use crate::hud::{anchor_rect, Anchor};
 use crate::theme;
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Direction as LayoutDirection, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -14,10 +15,9 @@ use std::time::Duration;
 use tachyonfx::EffectManager;
 
 /// Post-Render-Hook: treibt einen `EffectManager` gegen den Frame-Buffer.
-/// Generisch über den Key-Typ `K`, damit der spätere Live-Call (C, #31) die
-/// Key-Strategie frei wählt — diese Phase legt KEINE `App`-Felder an. In `draw`
-/// wird das später als `process_effects(mgr, elapsed, f.buffer_mut(), area)`
-/// aufgerufen; hier nur die wiederverwendbare, testbare Funktion.
+/// Generisch über den Key-Typ `K`, damit der spätere Live-Call (Pickup-/Wellen-
+/// Effekte, #31) die Key-Strategie frei wählt. Die dynamischen Notifications
+/// nutzen diesen Hook nicht — sie halten ihre Effekte selbst (s. `hud::notify`).
 pub fn process_effects<K: Clone + std::fmt::Debug + Ord>(
     manager: &mut EffectManager<K>,
     elapsed: Duration,
@@ -27,28 +27,23 @@ pub fn process_effects<K: Clone + std::fmt::Debug + Ord>(
     manager.process_effects(elapsed.into(), buf, area);
 }
 
-pub fn draw(f: &mut Frame, app: &App) {
-    let chunks = Layout::default()
-        .direction(LayoutDirection::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Length(1),
-            Constraint::Min(5),
-            Constraint::Length(1),
-        ])
-        .split(f.area());
-
+/// Frameless full-screen-Render: die Welt füllt den ganzen Screen, HUD-Teile
+/// schweben als Overlays an Ankern darüber. `elapsed` treibt die zeitbasierten
+/// Notifications (deshalb `&mut App`).
+pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
+    let area = f.area();
     let world = app.world_view();
-    draw_hud(f, chunks[0], app, &world);
-    draw_banner(f, chunks[1], app);
-    draw_world(f, chunks[2], &world);
-    draw_bottom(f, chunks[3], app, &world);
+
+    draw_world(f, area, &world);
+    draw_hud(f, area, app, &world);
+
+    // Notifications oben-mitte, über der Welt (mutabel: halten ihre Effekte).
+    app.notifications.render(f.buffer_mut(), area, elapsed);
 
     let self_dead = world.players.iter().any(|p| p.is_self && p.is_dead);
     if self_dead {
-        draw_death_overlay(f, app);
+        draw_death_overlay(f, area);
     }
-
     if app.debug {
         draw_debug_overlay(f, app);
     }
@@ -86,6 +81,8 @@ fn draw_debug_overlay(f: &mut Frame, app: &App) {
         )));
     }
     f.render_widget(Clear, rect);
+    // Debug-Overlay ist ein Dev-Werkzeug (PRFH_DEBUG) und behält bewusst seinen
+    // Rahmen — es ist nicht Teil der frameless Spiel-UI.
     let p = Paragraph::new(lines).block(
         Block::default()
             .borders(Borders::ALL)
@@ -94,48 +91,25 @@ fn draw_debug_overlay(f: &mut Frame, app: &App) {
     f.render_widget(p, rect);
 }
 
-fn draw_banner(f: &mut Frame, area: Rect, app: &App) {
-    if let Some(msg) = &app.trigger_banner {
-        let p = Paragraph::new(Line::from(Span::styled(
-            msg.clone(),
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::LightYellow)
-                .add_modifier(Modifier::BOLD),
-        )))
-        .alignment(ratatui::layout::Alignment::Center);
-        f.render_widget(p, area);
-    }
-}
-
-fn draw_death_overlay(f: &mut Frame, _app: &App) {
+/// Tod-Overlay: frameless, solides Danger-Panel mittig.
+fn draw_death_overlay(f: &mut Frame, area: Rect) {
     use ratatui::widgets::Clear;
-    let area = f.area();
-    let w = area.width.min(40);
-    let h = 3u16;
-    let rect = Rect {
-        x: area.width.saturating_sub(w) / 2,
-        y: area.height / 2 - 1,
-        width: w,
-        height: h,
-    };
+    let rect = anchor_rect(area, Anchor::Center, area.width.min(40), 1);
     f.render_widget(Clear, rect);
     let p = Paragraph::new(Line::from(Span::styled(
         " ✝  Du bist tot — Respawn läuft… ",
         Style::default()
             .fg(Color::White)
-            .bg(Color::Red)
+            .bg(theme::DANGER)
             .add_modifier(Modifier::BOLD),
     )))
     .alignment(ratatui::layout::Alignment::Center)
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .style(Style::default().fg(Color::White).bg(Color::Red)),
-    );
+    .style(Style::default().bg(theme::DANGER));
     f.render_widget(p, rect);
 }
 
+/// HUD-Layout 1 (Ecken): `dir` oben-links, `combo` oben-rechts, Spielerliste
+/// unten-links, Quit-Hinweis unten-rechts. Frameless — schwebt über der Welt.
 fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
     let dir = world
         .players
@@ -149,39 +123,80 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
         Direction::Left => "←",
         Direction::Right => "→",
     };
-
     let combo = app.local_engine().map(|e| e.combo).unwrap_or(0);
 
-    let hud = Paragraph::new(Line::from(vec![
+    // dir — oben-links
+    let dir_line = Line::from(vec![
         Span::styled("dir ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(
-            format!("{arrow} "),
+            arrow.to_string(),
             Style::default()
                 .fg(theme::ACCENT)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  "),
+    ]);
+    f.render_widget(
+        Paragraph::new(dir_line),
+        anchor_rect(area, Anchor::TopLeft, 8, 1),
+    );
+
+    // combo — oben-rechts
+    let combo_line = Line::from(vec![
         Span::styled("combo ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(
-            format!("x{}", combo),
+            format!("x{combo}"),
             Style::default()
                 .fg(theme::TEXT)
                 .add_modifier(Modifier::BOLD),
         ),
-    ]))
-    .block(Block::default().borders(Borders::ALL));
-    f.render_widget(hud, area);
+    ]);
+    f.render_widget(
+        Paragraph::new(combo_line),
+        anchor_rect(area, Anchor::TopRight, 12, 1),
+    );
+
+    // Spielerliste — unten-links
+    let mut players: Vec<Span> = world
+        .players
+        .iter()
+        .flat_map(|p| {
+            let label = if p.is_self {
+                format!("{}(du) ", p.name)
+            } else {
+                format!("{} ", p.name)
+            };
+            vec![Span::styled(
+                label,
+                Style::default()
+                    .fg(Color::Rgb(p.color.r, p.color.g, p.color.b))
+                    .add_modifier(Modifier::BOLD),
+            )]
+        })
+        .collect();
+    if players.is_empty() {
+        players.push(Span::raw(""));
+    }
+    f.render_widget(
+        Paragraph::new(Line::from(players)),
+        anchor_rect(area, Anchor::BottomLeft, area.width.saturating_sub(10), 1),
+    );
+
+    // Quit-Hinweis — unten-rechts
+    let quit = Line::from(vec![
+        Span::styled("[Esc]", Style::default().fg(theme::ACCENT)),
+        Span::styled(" quit", Style::default().fg(theme::TEXT_DIM)),
+    ]);
+    f.render_widget(
+        Paragraph::new(quit),
+        anchor_rect(area, Anchor::BottomRight, 10, 1),
+    );
 }
 
+/// Frameless Welt: füllt `area` komplett, cursor-zentriert. Kein Rahmen, kein
+/// Titel — die HUD-Overlays liegen darüber.
 fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" /work/repo/career.md ");
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let w = inner.width as i32;
-    let h = inner.height as i32;
+    let w = area.width as i32;
+    let h = area.height as i32;
     let center = (w / 2, h / 2);
 
     let self_player = world.players.iter().find(|p| p.is_self);
@@ -189,9 +204,8 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
 
     let mut grid: Vec<Vec<Option<(char, Style)>>> = vec![vec![None; w as usize]; h as usize];
 
-    // Collect all tiles across all players and sort by tick so the most
-    // recently written tile always wins at any given cell, regardless of
-    // which player wrote it (fixes host-vs-client render order).
+    // Alle Tiles aller Spieler nach tick sortieren, damit das zuletzt
+    // geschriebene Tile an jeder Zelle gewinnt (fixt Host-vs-Client-Reihenfolge).
     let mut all_tiles: Vec<(
         &crate::game::writing::Tile,
         &crate::game::world::PlayerColor,
@@ -207,6 +221,11 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
         let rx = tile.pos.0 - cursor.0 + center.0;
         let ry = tile.pos.1 - cursor.1 + center.1;
         if rx < 0 || ry < 0 || rx >= w || ry >= h {
+            continue;
+        }
+        // Voll verblasste Tail-Tiles rendern nichts (kein schwarzer Block, keine
+        // Verdeckung anderer Spieler an derselben Zelle). Glühende Tiles immer.
+        if tile.brightness == 0 && tile.glow == 0 {
             continue;
         }
         let b = tile.brightness as u64;
@@ -225,11 +244,9 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
         grid[ry as usize][rx as usize] = Some((tile.ch, style));
     }
 
-    // Cursor marker: only rendered for the local player.
+    // Cursor-Marker: Block-Stil in Akzentfarbe (eigener Spieler), Mitspieler in
+    // ihrer Farbe.
     for player in &world.players {
-        if !player.is_self {
-            continue;
-        }
         let rx = player.cursor.0 - cursor.0 + center.0;
         let ry = player.cursor.1 - cursor.1 + center.1;
         if rx < 0 || ry < 0 || rx >= w || ry >= h {
@@ -243,8 +260,8 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
         };
         let style = if player.is_self {
             Style::default()
-                .fg(Color::Black)
-                .bg(Color::Yellow)
+                .fg(theme::HIGHLIGHT_FG)
+                .bg(theme::ACCENT)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
@@ -252,7 +269,9 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD)
         };
-        grid[ry as usize][rx as usize] = Some((arrow_ch, style));
+        if player.is_self || !player.is_dead {
+            grid[ry as usize][rx as usize] = Some((arrow_ch, style));
+        }
     }
 
     let empty_style = Style::default();
@@ -269,32 +288,7 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
             Line::from(spans)
         })
         .collect();
-    f.render_widget(Paragraph::new(lines), inner);
-}
-
-fn draw_bottom(f: &mut Frame, area: Rect, _app: &App, world: &WorldView) {
-    let mut spans: Vec<Span> = world
-        .players
-        .iter()
-        .flat_map(|p| {
-            let label = if p.is_self {
-                format!("{}(du) ", p.name)
-            } else {
-                format!("{} ", p.name)
-            };
-            vec![Span::styled(
-                label,
-                Style::default()
-                    .fg(Color::Rgb(p.color.r, p.color.g, p.color.b))
-                    .add_modifier(Modifier::BOLD),
-            )]
-        })
-        .collect();
-    spans.push(Span::styled("  [Esc]", Style::default().fg(theme::ACCENT)));
-    spans.push(Span::styled(" quit", Style::default().fg(theme::TEXT_DIM)));
-
-    let p = Paragraph::new(Line::from(spans));
-    f.render_widget(p, area);
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 #[cfg(test)]
@@ -302,10 +296,10 @@ mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
 
-    fn render_to_string(app: &App) -> String {
+    fn render_to_string(app: &mut App) -> String {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, app)).unwrap();
+        terminal.draw(|f| draw(f, app, Duration::ZERO)).unwrap();
         terminal
             .backend()
             .buffer()
@@ -317,11 +311,9 @@ mod tests {
 
     #[test]
     fn topbar_shows_only_dir_and_combo() {
-        let app = App::new();
-        let out = render_to_string(&app);
-        // combo bleibt sichtbar ...
+        let mut app = App::new();
+        let out = render_to_string(&mut app);
         assert!(out.contains("combo"), "combo fehlt in der Topbar");
-        // ... aber der ganze Altbestand ist raus:
         assert!(!out.contains("PULL REQUEST"), "Titel-Banner noch da");
         assert!(!out.contains("word:"), "word-Anzeige noch in der Topbar");
         assert!(!out.contains("doubt"), "doubt noch in der Topbar");
@@ -329,35 +321,59 @@ mod tests {
     }
 
     #[test]
+    fn frameless_no_career_title_no_borders() {
+        let mut app = App::new();
+        let out = render_to_string(&mut app);
+        assert!(!out.contains("career.md"), "career.md-Altlast noch da");
+        // Keine Box-Drawing-Rahmen der Spiel-UI (Welt/HUD frameless).
+        assert!(!out.contains('┌'), "Rahmen-Ecke ┌ noch da");
+        assert!(!out.contains('└'), "Rahmen-Ecke └ noch da");
+    }
+
+    #[test]
     fn last_event_only_in_debug_overlay() {
-        // Sichtbarer, eindeutiger Marker als last_event.
         let mut app = App::new();
         app.last_event = "ZZMARKERZZ".into();
 
-        // Ohne Debug: Marker darf nirgends auftauchen.
         app.debug = false;
         assert!(
-            !render_to_string(&app).contains("ZZMARKERZZ"),
+            !render_to_string(&mut app).contains("ZZMARKERZZ"),
             "last_event leakt ohne PRFH_DEBUG"
         );
 
-        // Mit Debug: Marker erscheint im Overlay.
         app.debug = true;
         assert!(
-            render_to_string(&app).contains("ZZMARKERZZ"),
+            render_to_string(&mut app).contains("ZZMARKERZZ"),
             "last_event fehlt im Debug-Overlay"
         );
     }
 
     #[test]
     fn no_verbose_trigger_help() {
-        let app = App::new();
-        let out = render_to_string(&app);
+        let mut app = App::new();
+        let out = render_to_string(&mut app);
         assert!(
             !out.contains("up down left right"),
             "verbose Trigger-Hilfe noch da"
         );
         assert!(out.contains("Esc"), "Quit-Hinweis fehlt");
+    }
+
+    #[test]
+    fn live_notification_renders_many_frames_without_panic() {
+        // Voller verdrahteter Pfad: Turn feuert eine Notification, dann viele
+        // Frames rendern — fängt u.a. die expand-Panik (Panel-Welle am Timer-Ende).
+        let mut app = App::new();
+        app.on_char('u');
+        app.on_char('p'); // löst TURNED-Notification aus
+        assert!(!app.notifications.is_empty());
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        for _ in 0..60 {
+            terminal
+                .draw(|f| draw(f, &mut app, Duration::from_millis(50)))
+                .unwrap();
+        }
     }
 
     #[test]

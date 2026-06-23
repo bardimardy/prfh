@@ -245,17 +245,11 @@ impl HostState {
     }
 
     /// Advance visual state by one tick; returns any messages to broadcast
-    /// (`Respawned` and `TrailTrimmed` events).
+    /// (`Respawned` events). Trail trimming is local and needs no network sync.
     pub fn tick_visuals(&mut self) -> Vec<ServerMsg> {
         let mut msgs = Vec::new();
-        for (id, p) in &mut self.players {
-            let removed = p.engine.tick_visuals();
-            if removed > 0 {
-                msgs.push(ServerMsg::TrailTrimmed {
-                    id: *id,
-                    count: removed,
-                });
-            }
+        for p in self.players.values_mut() {
+            p.engine.tick_visuals();
         }
         let expired: Vec<PlayerId> = self
             .dead_ticks
@@ -347,7 +341,7 @@ impl HostState {
                 direction: p.engine.direction,
                 is_self: *id == HOST_ID,
                 is_dead: self.dead_ticks.contains_key(id),
-                idle_frames: 0,
+                pace: p.engine.pace,
             })
             .collect();
         WorldView {

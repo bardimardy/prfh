@@ -65,6 +65,25 @@ pub fn activation() -> Effect {
     ])
 }
 
+/// Notification-Panel-Aufbau: horizontale Welle aus der Mitte (`expand`), die
+/// das Panel beim Reinkommen „aufzieht". Läuft über `safe_expand` mit `CircOut`
+/// (Non-Overshoot) — darf nicht paniken. Stil ist die Panel-Füllung.
+pub fn notify_panel(ms: u32) -> Effect {
+    safe_expand(
+        ExpandDirection::Horizontal,
+        Style::default().bg(crate::theme::PANEL_BG),
+        ms,
+        Interpolation::CircOut,
+    )
+}
+
+/// Notification-Text-Enthüllung: die Zeichen sammeln sich aus Streuung zum
+/// lesbaren Text (`coalesce`). Wird über das Text-Rect prozessiert, nachdem der
+/// volle Text bereits gesetzt wurde.
+pub fn notify_reveal(ms: u32) -> Effect {
+    fx::coalesce((ms, Interpolation::SineOut))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,6 +115,17 @@ mod tests {
     #[test]
     fn activation_runs_to_end_without_panic() {
         run_to_end(activation());
+    }
+
+    #[test]
+    fn notify_panel_runs_to_end_without_panic() {
+        // expand-Panik-Regel: muss über die volle Timer-Dauer hinaus laufen.
+        run_to_end(notify_panel(240));
+    }
+
+    #[test]
+    fn notify_reveal_runs_to_end_without_panic() {
+        run_to_end(notify_reveal(260));
     }
 
     #[test]

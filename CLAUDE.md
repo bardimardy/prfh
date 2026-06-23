@@ -121,11 +121,24 @@ Trigger treffen kann.
   Code entfernen).
 - Schreib Code, der zum umgebenden Code passt (Naming, Kommentar-Dichte, Idiome).
 - Die Base-Mechanik lebt in `src/game/writing.rs`; Rendering in `src/render/`.
+- **HUD/Overlays** leben in `src/hud/` — ein anker-basiertes Overlay-Framework
+  (`Anchor` + `anchor_rect`) für die **frameless full-screen-UI**: die Welt füllt
+  `f.area()`, HUD-Teile schweben als Overlays darüber. Neue HUD-Elemente docken an
+  einem Anker an (keine Layout-OP). `src/hud/notify.rs` ist der dynamische
+  `NotificationStack` (typgetrieben, gemischtes Stacking), der das alte statische
+  `trigger_banner` ersetzt. `render::draw(f, &mut App, elapsed)` ist zeitgetrieben
+  (`elapsed` treibt die Notifications); Notification-Phasen sind eine reine Funktion
+  des Alters → unit-testbar, nur das Zeichnen nicht.
 - Visuelle Effekte/Animationen laufen über `src/effects/` (tachyonfx-Wrapper) + den
   `process_effects`-Render-Hook. **Bevor du Effekte anfasst:** Skill `effects` lesen —
   es kennt die verifizierte tachyonfx-0.25-API und die HARTE Non-Overshoot-Panik-Regel
   für `expand` (nur `safe_expand` benutzen). Effekte sind nicht unit-testbar; sie werden
   per „bis zum Ende prozessiert, ohne Panik"-Smoke-Test abgesichert.
+- **Visuelle/UX-Arbeit an der UI** (HUD, Overlay, Notification, Cursor, Look&Feel,
+  Effekt-A/B) zuerst im **visuellen Companion** `examples/hud_lab.rs`
+  (`cargo run --example hud_lab`) explorieren — isolierte, wegwerfbare Sandbox, die
+  das Hauptspiel nicht beeinflusst. Skill `visual-companion` kennt Aufbau, Bedienung
+  und Erweiterung. Gewählte Variante danach ins Spiel verdrahten.
 
 ## Spezifikationen
 

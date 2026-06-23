@@ -1,8 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::game::writing::{
-    fade_rate, Direction, Tile, GLOW_TICKS, TILE_MAX_BRIGHTNESS, TRAIL_SAFE_ZONE,
-};
+use crate::game::writing::{Direction, Tile, GLOW_TICKS};
 use crate::net::protocol::ServerMsg;
 
 pub type PlayerId = u8;
@@ -71,8 +69,10 @@ pub struct PlayerView {
     pub direction: Direction,
     pub is_self: bool,
     pub is_dead: bool,
-    /// Frames since this player's last keystroke — drives client-side fade animation.
-    pub idle_frames: u32,
+    /// Locally-tracked typing pace `[0,1]` for this player, bumped on each
+    /// incoming `Wrote` and decayed per frame. Drives the dynamic trail length
+    /// on the client — same gauge as the engine's, derived from messages.
+    pub pace: f32,
 }
 
 impl PlayerView {
@@ -103,25 +103,21 @@ impl WorldView {
         self.players.iter_mut().find(|p| p.id == id)
     }
 
-    /// Advance visual state one frame for all players (called once per frame by clients).
-    /// Replicates the host-side fade animation so remote trails fade smoothly in color.
-    /// Does NOT remove tiles — TrailTrimmed messages handle actual removal.
+    /// Per-frame visual tick: decrement glow, decay each player's pace, then
+    /// apply the same positional fade gradient + pace-derived length trim as the
+    /// single-player engine. Brightness, length and removal are derived locally
+    /// from each player's ordered trail, so the client fades and trims without
+    /// any extra network messages.
     pub fn tick_visuals(&mut self) {
+        use crate::game::writing::{apply_trail_fade, pace_decay, visible_len_for_pace};
         for p in &mut self.players {
-            p.idle_frames = p.idle_frames.saturating_add(1);
-            let rate = fade_rate(p.idle_frames);
-            let len = p.trail.len();
-            for (i, t) in p.trail.iter_mut().enumerate() {
+            for t in &mut p.trail {
                 if t.glow > 0 {
                     t.glow -= 1;
                 }
-                if i + TRAIL_SAFE_ZONE >= len {
-                    t.brightness = TILE_MAX_BRIGHTNESS;
-                } else {
-                    // Fade toward 1 (not 0) — removal is driven by TrailTrimmed.
-                    t.brightness = t.brightness.saturating_sub(rate).max(1);
-                }
             }
+            pace_decay(&mut p.pace);
+            apply_trail_fade(&mut p.trail, visible_len_for_pace(p.pace));
         }
     }
 
@@ -138,13 +134,13 @@ impl WorldView {
                     .map(|s| PlayerView {
                         is_self: s.id == your_id,
                         is_dead: s.is_dead,
-                        idle_frames: 0,
                         id: s.id,
                         color: s.color,
                         name: s.name,
                         trail: s.trail,
                         cursor: s.cursor,
                         direction: s.direction,
+                        pace: 0.0,
                     })
                     .collect();
             }
@@ -159,7 +155,7 @@ impl WorldView {
                         direction: Direction::Right,
                         is_self: id == self.self_id,
                         is_dead: false,
-                        idle_frames: 0,
+                        pace: 0.0,
                     });
                 }
             }
@@ -174,10 +170,10 @@ impl WorldView {
                 glow_len,
             } => {
                 if let Some(p) = self.player_mut(id) {
-                    p.idle_frames = 0;
                     p.push_tile(tile);
                     p.cursor = cursor;
                     p.direction = direction;
+                    crate::game::writing::pace_bump(&mut p.pace);
                     let n = p.trail.len();
                     let start = n.saturating_sub(glow_len as usize);
                     for t in &mut p.trail[start..n] {
@@ -192,12 +188,6 @@ impl WorldView {
                 }
             }
             ServerMsg::Reject { .. } => {}
-            ServerMsg::TrailTrimmed { id, count } => {
-                if let Some(p) = self.player_mut(id) {
-                    let remove = (count as usize).min(p.trail.len());
-                    p.trail.drain(..remove);
-                }
-            }
             ServerMsg::Died { id } => {
                 if let Some(p) = self.player_mut(id) {
                     p.trail.clear();
@@ -230,7 +220,7 @@ mod tests {
             direction: Direction::Right,
             is_self: true,
             is_dead: false,
-            idle_frames: 0,
+            pace: 0.0,
         });
         w
     }
@@ -348,6 +338,56 @@ mod tests {
         });
         assert!(w.players[0].trail.is_empty());
         assert_eq!(w.players[0].cursor, (0, 0));
+    }
+
+    #[test]
+    fn tick_visuals_fades_and_trims_trail_locally() {
+        use crate::game::writing::{visible_len_for_pace, TILE_MAX_BRIGHTNESS, TRAIL_MAX_VISIBLE};
+        let mut w = view_with_one_player();
+        {
+            let p = w.player_mut(1).unwrap();
+            p.pace = 1.0; // simulate fast typing → long trail
+            for i in 0..(TRAIL_MAX_VISIBLE + 40) {
+                p.push_tile(Tile {
+                    pos: (i as i32, 0),
+                    ch: 'a',
+                    tick: i as u64,
+                    glow: 0,
+                    brightness: TILE_MAX_BRIGHTNESS,
+                });
+            }
+        }
+        w.tick_visuals();
+        let p = &w.players[0];
+        // Client trims to the pace-derived window with no network removal message.
+        assert_eq!(p.trail.len(), visible_len_for_pace(p.pace));
+        // And the multiplayer trail now actually fades.
+        assert_eq!(p.trail.last().unwrap().brightness, TILE_MAX_BRIGHTNESS);
+        assert!(p.trail.first().unwrap().brightness < TILE_MAX_BRIGHTNESS);
+    }
+
+    #[test]
+    fn wrote_message_bumps_player_pace() {
+        use crate::net::protocol::ServerMsg;
+        let mut w = view_with_one_player();
+        assert_eq!(w.players[0].pace, 0.0);
+        w.apply(ServerMsg::Wrote {
+            id: 1,
+            tile: Tile {
+                pos: (0, 0),
+                ch: 'a',
+                tick: 0,
+                glow: 0,
+                brightness: crate::game::writing::TILE_MAX_BRIGHTNESS,
+            },
+            cursor: (1, 0),
+            direction: Direction::Right,
+            glow_len: 0,
+        });
+        assert!(
+            w.players[0].pace > 0.0,
+            "Wrote must bump the client pace gauge"
+        );
     }
 
     #[test]

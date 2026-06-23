@@ -20,8 +20,8 @@ fn typing_up_in_world_mode_changes_direction_immediately() {
         "after 'p' direction should be Up"
     );
     assert!(
-        app.trigger_banner.is_some(),
-        "trigger banner should be set after firing"
+        !app.notifications.is_empty(),
+        "a notification should be queued after firing a turn"
     );
 }
 

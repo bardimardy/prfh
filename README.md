@@ -56,13 +56,22 @@ Optional: Umgebungsvariable `PRFH_DEBUG=1` setzen, um ein Debug-Overlay
 ## Build & Run
 
 ```sh
-cargo run     # Spiel starten
-cargo test    # Tests ausführen
+cargo run                      # Spiel starten
+cargo test                     # Tests ausführen
+cargo run --example hud_lab    # visueller Companion (HUD/Overlay-Sandbox)
 ```
+
+Die UI ist **frameless** (die Welt füllt den ganzen Screen, HUD-Teile schweben
+als Overlays an den Ecken) und zeigt **dynamische Notifications** oben in der
+Mitte (z. B. beim Abbiegen). Der **`hud_lab`-Companion** ist eine isolierte,
+wegwerfbare Sandbox zum Explorieren von HUD-/Overlay-/Notification-/Cursor-Looks —
+er beeinflusst das Hauptspiel nicht.
 
 ## Docs
 
 - [docs/](docs/) — Design-Dokumente für das größere Spiel, das auf dieser Basis aufbauen soll.
+- [docs/superpowers/specs/2026-06-23-frameless-hud-overlay-framework-design.md](docs/superpowers/specs/2026-06-23-frameless-hud-overlay-framework-design.md)
+  — frameless HUD + Overlay-Framework + dynamische Notifications.
 
 ---
 
