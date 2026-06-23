@@ -150,25 +150,33 @@ pub fn trail_brightness(from_tail: usize, visible_len: usize) -> u8 {
     (TILE_MAX_BRIGHTNESS as f32 * t * t).round() as u8
 }
 
-/// Per-frame brightness decrease for tiles that are fading out (past visible_len).
-/// 200 / 25 = 8 frames ≈ 130 ms of fade animation before removal.
-const TRAIL_FADE_OUT_RATE: u8 = 25;
+/// Compute the per-frame fade-out rate for tiles past `visible_len`.
+/// Fast typing (pace → 1.0): slow fade so the long tail lingers visibly.
+/// Slow typing (pace → 0.0): fast fade so the short tail snaps away quickly.
+///   pace = 1.0 → rate  5  (200/5  = 40 frames ≈ 0.67s)
+///   pace = 0.5 → rate 28  (200/28 ≈  7 frames ≈ 0.12s)
+///   pace = 0.0 → rate 50  (200/50 =  4 frames ≈ 0.07s)
+fn fade_out_rate(pace: f32) -> u8 {
+    let p = pace.clamp(0.0, 1.0);
+    (5.0 + (1.0 - p) * 45.0).round() as u8
+}
 
 /// Apply pace-based trail management:
 /// - Tiles within `visible_len` of the tail → full brightness (solid color).
-/// - Tiles beyond `visible_len` → fade out by `TRAIL_FADE_OUT_RATE` per frame.
+/// - Tiles beyond `visible_len` → fade out at a pace-dependent rate.
 /// - Tiles at brightness 0 → removed.
 ///
 /// Shared by single-player (`WritingEngine`) and multiplayer (`WorldView`) so
 /// both fade and trim identically and *locally* — no network sync needed.
-pub fn apply_trail_fade(trail: &mut Vec<Tile>, visible_len: usize) {
+pub fn apply_trail_fade(trail: &mut Vec<Tile>, visible_len: usize, pace: f32) {
+    let rate = fade_out_rate(pace);
     let len = trail.len();
     let fade_start = len.saturating_sub(visible_len);
 
     for (i, t) in trail.iter_mut().enumerate() {
         if i < fade_start {
             // Outside visible window: fade toward removal.
-            t.brightness = t.brightness.saturating_sub(TRAIL_FADE_OUT_RATE);
+            t.brightness = t.brightness.saturating_sub(rate);
         } else {
             // Inside visible window: solid color.
             t.brightness = TILE_MAX_BRIGHTNESS;
@@ -227,7 +235,7 @@ impl WritingEngine {
             }
         }
         pace_decay(&mut self.pace);
-        apply_trail_fade(&mut self.trail, visible_len_for_pace(self.pace));
+        apply_trail_fade(&mut self.trail, visible_len_for_pace(self.pace), self.pace);
     }
 
     pub fn on_char(&mut self, ch: char) -> StepResult {
