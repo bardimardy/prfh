@@ -5,7 +5,10 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::{io, time::Duration};
+use std::{
+    io,
+    time::{Duration, Instant},
+};
 
 use prfh::{
     app::{App, Mode},
@@ -105,9 +108,12 @@ where
 {
     let mut app = App::new_single();
     app.debug = debug;
+    let mut last_draw = Instant::now();
 
     while !app.should_quit {
-        terminal.draw(|f| render::draw(f, &app))?;
+        let elapsed = last_draw.elapsed();
+        last_draw = Instant::now();
+        terminal.draw(|f| render::draw(f, &mut app, elapsed))?;
 
         if event::poll(Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
@@ -162,9 +168,12 @@ where
     let (world, mut handle) = connect(&addr, &name)?;
     let mut app = App::new_with_mode(Mode::Client(world));
     app.debug = debug;
+    let mut last_draw = Instant::now();
 
     while !app.should_quit {
-        terminal.draw(|f| render::draw(f, &app))?;
+        let elapsed = last_draw.elapsed();
+        last_draw = Instant::now();
+        terminal.draw(|f| render::draw(f, &mut app, elapsed))?;
 
         let self_is_dead = app
             .world_view()
@@ -240,9 +249,12 @@ where
 
     let mut app = App::new_with_mode(Mode::Host(HostState::new(name)));
     app.debug = debug;
+    let mut last_draw = Instant::now();
 
     while !app.should_quit {
-        terminal.draw(|f| render::draw(f, &app))?;
+        let elapsed = last_draw.elapsed();
+        last_draw = Instant::now();
+        terminal.draw(|f| render::draw(f, &mut app, elapsed))?;
 
         // (a) local input
         if event::poll(Duration::from_millis(16))? {
