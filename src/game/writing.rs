@@ -150,18 +150,17 @@ pub fn trail_brightness(from_tail: usize, visible_len: usize) -> u8 {
     (TILE_MAX_BRIGHTNESS as f32 * t * t).round() as u8
 }
 
-/// Apply the positional brightness gradient and trim the trail to `visible_len`
-/// (derived from the player's typing pace). Shared by single-player
-/// (`WritingEngine`) and multiplayer (`WorldView`) so both fade and self-trim
-/// identically and *locally* — no network sync of brightness or removals.
+/// Trim the trail to `visible_len` (derived from the player's typing pace) and
+/// set all remaining tiles to full brightness. Shared by single-player
+/// (`WritingEngine`) and multiplayer (`WorldView`) so both trim identically and
+/// *locally* — no network sync needed.
 pub fn apply_trail_fade(trail: &mut Vec<Tile>, visible_len: usize) {
     let len = trail.len();
     if len > visible_len {
         trail.drain(0..len - visible_len);
     }
-    let len = trail.len();
-    for (i, t) in trail.iter_mut().enumerate() {
-        t.brightness = trail_brightness(len - 1 - i, visible_len);
+    for t in trail.iter_mut() {
+        t.brightness = TILE_MAX_BRIGHTNESS;
     }
 }
 
@@ -595,10 +594,8 @@ mod tests {
             e.on_char(ch);
         }
         e.tick_visuals();
-        let newest = e.trail.last().unwrap().brightness;
-        let oldest = e.trail.first().unwrap().brightness;
-        assert_eq!(newest, TILE_MAX_BRIGHTNESS);
-        assert!(oldest < newest, "older tiles must be dimmer immediately");
+        // All visible tiles keep full brightness — no gradient.
+        assert!(e.trail.iter().all(|t| t.brightness == TILE_MAX_BRIGHTNESS));
     }
 
     #[test]
@@ -636,9 +633,8 @@ mod tests {
         }
         assert!(e.trail.len() <= TRAIL_MAX_VISIBLE);
         assert_eq!(e.trail.len(), visible_len_for_pace(e.pace));
-        // Newest still full, oldest gone (smooth removal of an already-faded tile).
-        assert_eq!(e.trail.last().unwrap().brightness, TILE_MAX_BRIGHTNESS);
-        assert!(e.trail.first().unwrap().brightness < TILE_MAX_BRIGHTNESS);
+        // All visible tiles at full brightness — no gradient.
+        assert!(e.trail.iter().all(|t| t.brightness == TILE_MAX_BRIGHTNESS));
     }
 
     #[test]

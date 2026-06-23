@@ -361,9 +361,8 @@ mod tests {
         let p = &w.players[0];
         // Client trims to the pace-derived window with no network removal message.
         assert_eq!(p.trail.len(), visible_len_for_pace(p.pace));
-        // And the multiplayer trail now actually fades.
-        assert_eq!(p.trail.last().unwrap().brightness, TILE_MAX_BRIGHTNESS);
-        assert!(p.trail.first().unwrap().brightness < TILE_MAX_BRIGHTNESS);
+        // All visible tiles keep full brightness — no gradient.
+        assert!(p.trail.iter().all(|t| t.brightness == TILE_MAX_BRIGHTNESS));
     }
 
     #[test]
