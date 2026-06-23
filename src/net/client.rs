@@ -5,6 +5,7 @@ use std::thread;
 
 use anyhow::{anyhow, Result};
 
+use crate::game::arena::Arena;
 use crate::game::world::WorldView;
 use crate::net::protocol::{decode_line, encode_line, ClientMsg, InputEvent, ServerMsg};
 
@@ -22,7 +23,7 @@ impl ClientHandle {
 }
 
 /// Connect, perform the Hello/Welcome handshake, and start the reader thread.
-pub fn connect(addr: &str, name: &str) -> Result<(WorldView, ClientHandle)> {
+pub fn connect(addr: &str, name: &str) -> Result<(WorldView, Arena, ClientHandle)> {
     let stream = TcpStream::connect(addr)?;
     let mut write = stream.try_clone()?;
     write.write_all(
@@ -37,19 +38,21 @@ pub fn connect(addr: &str, name: &str) -> Result<(WorldView, ClientHandle)> {
     if reader.read_line(&mut line)? == 0 {
         return Err(anyhow!("Verbindung vom Host geschlossen"));
     }
-    let world = match decode_line::<ServerMsg>(&line)? {
+    let (world, arena) = match decode_line::<ServerMsg>(&line)? {
         ServerMsg::Welcome {
             your_id,
             color,
             players,
+            arena,
         } => {
             let mut w = WorldView::new(your_id);
             w.apply(ServerMsg::Welcome {
                 your_id,
                 color,
                 players,
+                arena: Vec::new(), // WorldView ignoriert die Arena (Sim ≠ Render)
             });
-            w
+            (w, Arena::from_snapshot(arena))
         }
         ServerMsg::Reject { reason } => return Err(anyhow!(reason)),
         _ => return Err(anyhow!("unerwartete erste Nachricht vom Host")),
@@ -75,5 +78,5 @@ pub fn connect(addr: &str, name: &str) -> Result<(WorldView, ClientHandle)> {
         }
     });
 
-    Ok((world, ClientHandle { write, rx }))
+    Ok((world, arena, ClientHandle { write, rx }))
 }

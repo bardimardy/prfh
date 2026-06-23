@@ -2,7 +2,7 @@ use anyhow::Result;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
-use crate::game::arena::{Entity, EntityId};
+use crate::game::arena::{ArenaSnapshot, Entity, EntityId};
 use crate::game::world::{PlayerColor, PlayerId, PlayerSnapshot};
 use crate::game::writing::{Direction, Tile};
 
@@ -25,6 +25,7 @@ pub enum ServerMsg {
         your_id: PlayerId,
         color: PlayerColor,
         players: Vec<PlayerSnapshot>,
+        arena: ArenaSnapshot,
     },
     PlayerJoined {
         id: PlayerId,
@@ -147,6 +148,7 @@ mod tests {
             your_id: 1,
             color: PALETTE[1],
             players: vec![],
+            arena: vec![],
         };
         let back: ServerMsg = decode_line(&encode_line(&msg)).unwrap();
         assert_eq!(msg, back);

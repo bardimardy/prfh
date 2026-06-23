@@ -280,6 +280,7 @@ mod tests {
                 direction: Direction::Up,
                 is_dead: false,
             }],
+            arena: vec![],
         });
         assert_eq!(w.self_id, 2);
         assert_eq!(w.players.len(), 1);

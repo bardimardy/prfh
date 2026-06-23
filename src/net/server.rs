@@ -178,6 +178,7 @@ impl HostState {
             your_id: id,
             color,
             players: self.snapshot(),
+            arena: self.arena.snapshot(),
         };
         let joined = ServerMsg::PlayerJoined { id, color, name };
         Ok(JoinOutcome {
