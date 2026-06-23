@@ -131,17 +131,24 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
         Span::styled("dir ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(
             arrow.to_string(),
-            Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
         ),
     ]);
-    f.render_widget(Paragraph::new(dir_line), anchor_rect(area, Anchor::TopLeft, 8, 1));
+    f.render_widget(
+        Paragraph::new(dir_line),
+        anchor_rect(area, Anchor::TopLeft, 8, 1),
+    );
 
     // combo — oben-rechts
     let combo_line = Line::from(vec![
         Span::styled("combo ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(
             format!("x{combo}"),
-            Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(theme::TEXT)
+                .add_modifier(Modifier::BOLD),
         ),
     ]);
     f.render_widget(
@@ -180,7 +187,10 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
         Span::styled("[Esc]", Style::default().fg(theme::ACCENT)),
         Span::styled(" quit", Style::default().fg(theme::TEXT_DIM)),
     ]);
-    f.render_widget(Paragraph::new(quit), anchor_rect(area, Anchor::BottomRight, 10, 1));
+    f.render_widget(
+        Paragraph::new(quit),
+        anchor_rect(area, Anchor::BottomRight, 10, 1),
+    );
 }
 
 /// Frameless Welt: füllt `area` komplett, cursor-zentriert. Kein Rahmen, kein
@@ -305,9 +315,7 @@ mod tests {
     fn render_to_string(app: &mut App) -> String {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|f| draw(f, app, Duration::ZERO))
-            .unwrap();
+        terminal.draw(|f| draw(f, app, Duration::ZERO)).unwrap();
         terminal
             .backend()
             .buffer()
