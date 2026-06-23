@@ -112,7 +112,8 @@ pub fn pace_bump(pace: &mut f32) {
     *pace = (*pace + PACE_GAIN).min(1.0);
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[allow(clippy::derive_partial_eq_without_eq)]
 pub struct Tile {
     pub pos: (i32, i32),
     pub ch: char,
@@ -122,6 +123,10 @@ pub struct Tile {
     pub glow: u32,
     /// Current brightness (0 = invisible and will be removed, TILE_MAX_BRIGHTNESS = full).
     pub brightness: u8,
+    /// Typing pace at write time — drives the individual fade-out rate for this tile.
+    /// Defaults to 0.0 for tiles from snapshots/tests that don't set it.
+    #[serde(default)]
+    pub written_pace: f32,
 }
 
 /// How many ticks a trigger-tile glows after firing.
@@ -202,7 +207,7 @@ pub struct WritingEngine {
     pub pace: f32,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum StepResult {
     Wrote(Tile),
     WroteAndTurned(Tile, Direction),
@@ -248,6 +253,7 @@ impl WritingEngine {
             tick: self.tick,
             glow: 0,
             brightness: TILE_MAX_BRIGHTNESS,
+            written_pace: self.pace,
         };
         self.trail.push(tile.clone());
 
@@ -558,6 +564,7 @@ mod tests {
             tick: 7,
             glow: GLOW_TICKS,
             brightness: TILE_MAX_BRIGHTNESS,
+            written_pace: 0.0,
         };
         let s = ron::to_string(&t).unwrap();
         let back: Tile = ron::from_str(&s).unwrap();
