@@ -121,6 +121,11 @@ Trigger treffen kann.
   Code entfernen).
 - Schreib Code, der zum umgebenden Code passt (Naming, Kommentar-Dichte, Idiome).
 - Die Base-Mechanik lebt in `src/game/writing.rs`; Rendering in `src/render/`.
+- **Netz-/Welt-Sync** (host-autoritativ) lebt in `src/net/` + `src/game/arena.rs` (Sim-Welt)
+  vs. `src/game/world.rs` (Render-`WorldView` — **nicht** umbenennen). **Bevor du das
+  Protokoll anfasst** (neue `ServerMsg`-Variante/-Feld, `Welcome`-Snapshot, Broadcast):
+  Skill `net-sync` lesen — es kennt das Delta+Snapshot-Muster, die per-Task-grün-Disziplin
+  beim Enum-Ripple, die Sim-vs-Render-Trennung und das Loopback-Test-Muster.
 - **HUD/Overlays** leben in `src/hud/` — ein anker-basiertes Overlay-Framework
   (`Anchor` + `anchor_rect`) für die **frameless full-screen-UI**: die Welt füllt
   `f.area()`, HUD-Teile schweben als Overlays darüber. Neue HUD-Elemente docken an
