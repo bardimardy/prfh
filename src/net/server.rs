@@ -7,6 +7,7 @@ use std::thread;
 
 use rand::Rng;
 
+use crate::game::arena::{Arena, Entity, EntityKind};
 use crate::game::world::{
     PlayerColor, PlayerId, PlayerSnapshot, PlayerView, WorldView, MAX_PLAYERS, PALETTE,
 };
@@ -122,6 +123,9 @@ pub struct HostState {
     join_seq: u32,
     /// countdown ticks until respawn; absent = alive
     dead_ticks: HashMap<PlayerId, u32>,
+    /// Die autoritative Sim-Welt. Host mutiert sie und broadcastet Deltas;
+    /// der Welcome-Snapshot trägt sie fürs Late-Join.
+    arena: Arena,
 }
 
 impl HostState {
@@ -130,6 +134,7 @@ impl HostState {
             players: BTreeMap::new(),
             join_seq: 0,
             dead_ticks: HashMap::new(),
+            arena: Arena::new(),
         };
         // Host always exists as id 0, color index 0, spawn (0,0).
         s.insert_player(HOST_ID, 0, host_name);
@@ -357,6 +362,20 @@ impl HostState {
     pub fn local_engine(&self) -> &WritingEngine {
         &self.players[&HOST_ID].engine
     }
+
+    /// Read-only-Zugriff auf die autoritative Arena (Rendering, Welcome-Snapshot).
+    pub fn arena(&self) -> &Arena {
+        &self.arena
+    }
+
+    /// Spawnt eine Entität in die autoritative Arena und liefert das
+    /// `EntitySpawned`-Delta, das der Aufrufer an alle Clients broadcastet.
+    pub fn spawn_entity(&mut self, pos: (i32, i32), kind: EntityKind) -> ServerMsg {
+        let id = self.arena.spawn(pos, kind.clone());
+        ServerMsg::EntitySpawned {
+            entity: Entity { id, pos, kind },
+        }
+    }
 }
 
 #[cfg(test)]
@@ -449,6 +468,25 @@ mod tests {
         let c = s.add_player("C".into()).unwrap();
         assert_eq!(c.id, 1, "should reuse freed id 1, not allocate 3");
         assert_ne!(c.id, HOST_ID);
+    }
+
+    #[test]
+    fn spawn_entity_adds_to_arena_and_returns_delta() {
+        use crate::game::arena::{EntityKind, PowerupWord};
+        let mut s = HostState::new("Host".into());
+        assert!(s.arena().entities.is_empty());
+        let msg = s.spawn_entity(
+            (4, 2),
+            EntityKind::PowerupWord(PowerupWord { word: "sudo".into() }),
+        );
+        assert_eq!(s.arena().entities.len(), 1);
+        match msg {
+            ServerMsg::EntitySpawned { entity } => {
+                assert_eq!(entity.id, 0);
+                assert_eq!(entity.pos, (4, 2));
+            }
+            _ => panic!("expected EntitySpawned"),
+        }
     }
 
     #[test]
