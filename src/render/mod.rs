@@ -209,6 +209,11 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView) {
         if rx < 0 || ry < 0 || rx >= w || ry >= h {
             continue;
         }
+        // Fully-faded tail tiles render nothing — no black block, and they don't
+        // occlude other players' tiles at the same cell. Glowing tiles always show.
+        if tile.brightness == 0 && tile.glow == 0 {
+            continue;
+        }
         let b = tile.brightness as u64;
         let max = crate::game::writing::TILE_MAX_BRIGHTNESS as u64;
         let style = if tile.glow > 0 {

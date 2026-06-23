@@ -77,6 +77,7 @@ impl App {
                     direction: e.direction,
                     is_self: true,
                     is_dead: false,
+                    pace: e.pace,
                 }],
             },
             Mode::Host(h) => h.world_view(),

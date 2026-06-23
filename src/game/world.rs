@@ -69,6 +69,10 @@ pub struct PlayerView {
     pub direction: Direction,
     pub is_self: bool,
     pub is_dead: bool,
+    /// Locally-tracked typing pace `[0,1]` for this player, bumped on each
+    /// incoming `Wrote` and decayed per frame. Drives the dynamic trail length
+    /// on the client — same gauge as the engine's, derived from messages.
+    pub pace: f32,
 }
 
 impl PlayerView {
@@ -99,14 +103,21 @@ impl WorldView {
         self.players.iter_mut().find(|p| p.id == id)
     }
 
-    /// Decrement glow on every tile of every player (called once per frame).
+    /// Per-frame visual tick: decrement glow, decay each player's pace, then
+    /// apply the same positional fade gradient + pace-derived length trim as the
+    /// single-player engine. Brightness, length and removal are derived locally
+    /// from each player's ordered trail, so the client fades and trims without
+    /// any extra network messages.
     pub fn tick_visuals(&mut self) {
+        use crate::game::writing::{apply_trail_fade, pace_decay, visible_len_for_pace};
         for p in &mut self.players {
             for t in &mut p.trail {
                 if t.glow > 0 {
                     t.glow -= 1;
                 }
             }
+            pace_decay(&mut p.pace);
+            apply_trail_fade(&mut p.trail, visible_len_for_pace(p.pace));
         }
     }
 
@@ -129,6 +140,7 @@ impl WorldView {
                         trail: s.trail,
                         cursor: s.cursor,
                         direction: s.direction,
+                        pace: 0.0,
                     })
                     .collect();
             }
@@ -143,6 +155,7 @@ impl WorldView {
                         direction: Direction::Right,
                         is_self: id == self.self_id,
                         is_dead: false,
+                        pace: 0.0,
                     });
                 }
             }
@@ -160,6 +173,7 @@ impl WorldView {
                     p.push_tile(tile);
                     p.cursor = cursor;
                     p.direction = direction;
+                    crate::game::writing::pace_bump(&mut p.pace);
                     let n = p.trail.len();
                     let start = n.saturating_sub(glow_len as usize);
                     for t in &mut p.trail[start..n] {
@@ -206,6 +220,7 @@ mod tests {
             direction: Direction::Right,
             is_self: true,
             is_dead: false,
+            pace: 0.0,
         });
         w
     }
@@ -323,6 +338,56 @@ mod tests {
         });
         assert!(w.players[0].trail.is_empty());
         assert_eq!(w.players[0].cursor, (0, 0));
+    }
+
+    #[test]
+    fn tick_visuals_fades_and_trims_trail_locally() {
+        use crate::game::writing::{visible_len_for_pace, TILE_MAX_BRIGHTNESS, TRAIL_MAX_VISIBLE};
+        let mut w = view_with_one_player();
+        {
+            let p = w.player_mut(1).unwrap();
+            p.pace = 1.0; // simulate fast typing → long trail
+            for i in 0..(TRAIL_MAX_VISIBLE + 40) {
+                p.push_tile(Tile {
+                    pos: (i as i32, 0),
+                    ch: 'a',
+                    tick: i as u64,
+                    glow: 0,
+                    brightness: TILE_MAX_BRIGHTNESS,
+                });
+            }
+        }
+        w.tick_visuals();
+        let p = &w.players[0];
+        // Client trims to the pace-derived window with no network removal message.
+        assert_eq!(p.trail.len(), visible_len_for_pace(p.pace));
+        // And the multiplayer trail now actually fades.
+        assert_eq!(p.trail.last().unwrap().brightness, TILE_MAX_BRIGHTNESS);
+        assert!(p.trail.first().unwrap().brightness < TILE_MAX_BRIGHTNESS);
+    }
+
+    #[test]
+    fn wrote_message_bumps_player_pace() {
+        use crate::net::protocol::ServerMsg;
+        let mut w = view_with_one_player();
+        assert_eq!(w.players[0].pace, 0.0);
+        w.apply(ServerMsg::Wrote {
+            id: 1,
+            tile: Tile {
+                pos: (0, 0),
+                ch: 'a',
+                tick: 0,
+                glow: 0,
+                brightness: crate::game::writing::TILE_MAX_BRIGHTNESS,
+            },
+            cursor: (1, 0),
+            direction: Direction::Right,
+            glow_len: 0,
+        });
+        assert!(
+            w.players[0].pace > 0.0,
+            "Wrote must bump the client pace gauge"
+        );
     }
 
     #[test]
