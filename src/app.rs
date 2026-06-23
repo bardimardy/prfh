@@ -120,13 +120,16 @@ impl App {
                 StepResult::WroteAndStopped(_) => "paused".into(),
                 StepResult::Erased => "erased".into(),
             };
-            if let StepResult::WroteAndTurned(_, d) = result {
-                self.notifications
-                    .push(NotifyKind::Info, "⟹  TURNED", format!("{d:?}"));
-            }
-            if matches!(result, StepResult::WroteAndStopped(_)) {
-                self.notifications
-                    .push(NotifyKind::Info, "⟹  STOP", "next char overwrites");
+            match result {
+                StepResult::WroteAndTurned(_, d) => {
+                    self.notifications
+                        .push(NotifyKind::Info, "⟹  TURNED", format!("{d:?}"));
+                }
+                StepResult::WroteAndStopped(_) => {
+                    self.notifications
+                        .push(NotifyKind::Info, "⟹  STOP", "next char overwrites");
+                }
+                _ => {}
             }
         }
     }

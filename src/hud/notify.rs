@@ -101,6 +101,11 @@ impl Notification {
     }
 
     fn full_width(&self, area: Rect) -> u16 {
+        // Bei winzigen Terminals (< 8 Spalten) nur die Breite nehmen — `clamp(8,
+        // area.width)` würde paniken (min > max). Projekt-Norm: nie paniken.
+        if area.width < 8 {
+            return area.width;
+        }
         let t = self.title.chars().count() as u16;
         let d = self.detail.chars().count() as u16;
         let w = match self.kind {
@@ -275,6 +280,18 @@ mod tests {
         let mut buf = Buffer::empty(area);
         // Über mehrere Frames bis weit ins Leben — expand-Panik-Regel inklusive.
         for _ in 0..40 {
+            s.render(&mut buf, area, Duration::from_millis(50));
+        }
+    }
+
+    #[test]
+    fn tiny_terminal_does_not_panic() {
+        // < 8 Spalten: full_width darf nicht über clamp(8, width) paniken.
+        let mut s = NotificationStack::new();
+        s.push(NotifyKind::Major, "MERGED", "main is green");
+        let area = Rect::new(0, 0, 4, 2);
+        let mut buf = Buffer::empty(area);
+        for _ in 0..20 {
             s.render(&mut buf, area, Duration::from_millis(50));
         }
     }

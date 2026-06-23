@@ -444,6 +444,10 @@ fn draw_one(
 
     if fx_panel {
         // expand-Effekt lazy anlegen, über das volle Rect prozessieren.
+        // ⚠️ Companion ruft fx::expand direkt (safe_expand ist crate-privat). Die
+        // Kurve MUSS Non-Overshoot bleiben (CircOut/QuadOut/SineOut/CubicOut) —
+        // Back*/Elastic* paniken am Timer-Ende (siehe Skill `effects`). Im Spiel
+        // läuft das über effects::notify_panel/safe_expand.
         if n.panel_fx.is_none() {
             n.panel_fx = Some(fx::expand(
                 ExpandDirection::Horizontal,

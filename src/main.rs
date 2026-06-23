@@ -327,7 +327,7 @@ where
                 broadcast(&mut streams, None, &msg);
             }
         }
-        app.tick(); // banner countdown (host tick_visuals already called above)
+        app.tick(); // visual state (Host hat tick_visuals oben schon aufgerufen → No-Op)
     }
     Ok(())
 }
