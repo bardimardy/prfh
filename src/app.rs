@@ -1,5 +1,6 @@
 use crate::game::world::{PlayerId, PlayerView, WorldView};
 use crate::game::writing::{StepResult, WritingEngine};
+use crate::hud::notify::{NotificationStack, NotifyKind};
 use crate::net::server::HostState;
 
 impl Default for App {
@@ -18,8 +19,9 @@ pub struct App {
     pub should_quit: bool,
     pub mode: Mode,
     pub last_event: String,
-    pub trigger_banner: Option<String>,
-    pub trigger_banner_ticks: u32,
+    /// Dynamische Quick-Notifications (oben-mitte, schweben über der Welt).
+    /// Ersetzt das frühere statische `trigger_banner`.
+    pub notifications: NotificationStack,
     pub debug: bool,
     pub debug_lines: Vec<String>,
 }
@@ -41,8 +43,7 @@ impl App {
             should_quit: false,
             mode: Mode::Single(WritingEngine::new((0, 0))),
             last_event: String::from("type to write yourself a path"),
-            trigger_banner: None,
-            trigger_banner_ticks: 0,
+            notifications: NotificationStack::new(),
             debug: false,
             debug_lines: Vec::new(),
         }
@@ -95,12 +96,8 @@ impl App {
     }
 
     pub fn tick(&mut self) {
-        if self.trigger_banner_ticks > 0 {
-            self.trigger_banner_ticks -= 1;
-            if self.trigger_banner_ticks == 0 {
-                self.trigger_banner = None;
-            }
-        }
+        // Notifications werden zeitbasiert im Render (mit Frame-`elapsed`)
+        // getrieben, nicht hier — `tick` ist frame-/visual-State.
         match &mut self.mode {
             Mode::Single(e) => e.tick_visuals(),
             // Host tick_visuals is driven by run_host (which also broadcasts
@@ -123,11 +120,16 @@ impl App {
                 StepResult::WroteAndStopped(_) => "paused".into(),
                 StepResult::Erased => "erased".into(),
             };
-            if let StepResult::WroteAndTurned(_, d) = result {
-                self.set_banner(format!("⟹ TURNED: {:?}", d));
-            }
-            if matches!(result, StepResult::WroteAndStopped(_)) {
-                self.set_banner("⟹ STOP — next char overwrites".into());
+            match result {
+                StepResult::WroteAndTurned(_, d) => {
+                    self.notifications
+                        .push(NotifyKind::Info, "⟹  TURNED", format!("{d:?}"));
+                }
+                StepResult::WroteAndStopped(_) => {
+                    self.notifications
+                        .push(NotifyKind::Info, "⟹  STOP", "next char overwrites");
+                }
+                _ => {}
             }
         }
     }
@@ -140,9 +142,4 @@ impl App {
     }
 
     pub fn on_enter(&mut self) {}
-
-    fn set_banner(&mut self, msg: String) {
-        self.trigger_banner = Some(msg);
-        self.trigger_banner_ticks = 90;
-    }
 }
