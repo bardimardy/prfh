@@ -72,6 +72,10 @@ fn anchor_rect(area: Rect, a: Anchor, w: u16, h: u16) -> Rect {
 
 #[derive(Clone, Copy, PartialEq)]
 enum InStyle {
+    /// Hintergrund baut sich center-out (horizontal, beide Richtungen) auf,
+    /// danach faded der Text drauf. Geometrie-Animation, kein tachyonfx-expand
+    /// (das hätte die Overshoot-Panik-Falle + Block-Chars).
+    Expand,
     Evolve,
     Coalesce,
     Fade,
@@ -79,6 +83,7 @@ enum InStyle {
 impl InStyle {
     fn label(self) -> &'static str {
         match self {
+            InStyle::Expand => "expand",
             InStyle::Evolve => "evolve",
             InStyle::Coalesce => "coalesce",
             InStyle::Fade => "fade",
@@ -86,13 +91,19 @@ impl InStyle {
     }
     fn next(self) -> Self {
         match self {
+            InStyle::Expand => InStyle::Evolve,
             InStyle::Evolve => InStyle::Coalesce,
             InStyle::Coalesce => InStyle::Fade,
-            InStyle::Fade => InStyle::Evolve,
+            InStyle::Fade => InStyle::Expand,
         }
     }
     fn effect(self, accent: Color) -> Effect {
         match self {
+            // Expand: der Effekt ist nur die Text-Enthüllung NACH dem Bg-Aufbau —
+            // sanftes Auftauchen aus dem Panel-Grau.
+            InStyle::Expand => {
+                fx::fade_from(theme::PANEL_BG, theme::PANEL_BG, (220, Interpolation::SineOut))
+            }
             // evolve_INTO enthüllt am Ende den echten Text (evolve_from wäre die
             // umgekehrte Richtung → endet in Blöcken). Die Übergangs-Symbole im
             // Akzent-Ton auf Panel-BG, statt Default-Weiß.
@@ -162,6 +173,8 @@ struct Notif {
     effect: Effect,
     out_style: OutStyle,
     hold_left: Duration,
+    expand_in: bool, // center-out Bg-Aufbau vor der Text-Enthüllung
+    build: f32,      // 0..1 Fortschritt des Bg-Aufbaus (nur bei expand_in)
 }
 
 impl Notif {
@@ -180,6 +193,8 @@ impl Notif {
             effect: in_style.effect(accent),
             out_style,
             hold_left: Duration::from_millis(1600),
+            expand_in: in_style == InStyle::Expand,
+            build: 0.0,
         }
     }
 
@@ -189,6 +204,12 @@ impl Notif {
     fn update(&mut self, dt: Duration) -> bool {
         match self.phase {
             Phase::In => {
+                // Bg-Aufbau zuerst (center-out); der Text-Effekt läuft erst danach
+                // (in draw wird er während des Aufbaus nicht prozessiert).
+                if self.expand_in && self.build < 1.0 {
+                    self.build = (self.build + dt.as_secs_f32() / 0.24).min(1.0);
+                    return false;
+                }
                 if self.effect.done() {
                     self.phase = Phase::Hold;
                 }
@@ -235,7 +256,7 @@ impl State {
             frames: false,
             dir: '→',
             combo: 7,
-            in_style: InStyle::Evolve,
+            in_style: InStyle::Expand,
             out_style: OutStyle::DissolveTo,
             notifs: Vec::new(),
             notif_seq: 0,
@@ -504,6 +525,23 @@ fn draw_notifications(f: &mut Frame, area: Rect, state: &mut State, dt: Duration
         };
         let x = area.left() + (area.width.saturating_sub(w)) / 2;
         let rect = Rect { x, y, width: w, height: h };
+
+        // Center-out Bg-Aufbau: nur das Panel wächst aus der Mitte, noch kein Text.
+        if n.expand_in && n.build < 1.0 {
+            let bw = ((w as f32 * n.build).round() as u16).clamp(1, w);
+            let bx = rect.x + (w - bw) / 2;
+            let brect = Rect { x: bx, y, width: bw, height: h };
+            f.render_widget(Clear, brect);
+            f.render_widget(
+                Paragraph::new(vec![Line::from(""); h as usize]).style(Style::default().bg(theme::PANEL_BG)),
+                brect,
+            );
+            y = y.saturating_add(h + 1);
+            if y >= area.bottom() {
+                break;
+            }
+            continue;
+        }
 
         if card {
             // Solider Panel-Block (frameless) + vertikaler Akzent-Balken links.
