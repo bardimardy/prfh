@@ -3,12 +3,18 @@ use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
 use prfh::game::arena::{Arena, EntityKind, PowerupWord};
+use prfh::game::powerup::Axis;
 use prfh::net::client::connect;
 use prfh::net::protocol::ServerMsg;
 use prfh::net::server::{spawn_listener, HostEvent, HostState};
 
 fn powerup(word: &str) -> EntityKind {
-    EntityKind::PowerupWord(PowerupWord { word: word.into() })
+    EntityKind::PowerupWord(PowerupWord {
+        name: word.into(),
+        origin: (0, 0),
+        axis: Axis::Horizontal,
+        reversed: false,
+    })
 }
 
 /// (a) Delta-Pfad: Host spawnt eine Entität, NACHDEM der Client verbunden ist.
@@ -106,7 +112,7 @@ fn late_join_client_gets_entity_via_welcome_snapshot() {
     assert_eq!(arena.entities.len(), 1, "Late-Join muss die Entität via Snapshot sehen");
     assert_eq!(arena.entities[0].pos, (1, 2));
     match &arena.entities[0].kind {
-        EntityKind::PowerupWord(pw) => assert_eq!(pw.word, "sudo"),
+        EntityKind::PowerupWord(pw) => assert_eq!(pw.name, "sudo"),
     }
 
     let _ = host.join();

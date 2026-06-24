@@ -18,19 +18,17 @@ pub struct Entity {
 }
 
 /// Art der Entität. Additiv erweiterbar (Item, Obstacle, …) — Sync/Render
-/// tragen neue Varianten automatisch mit.
+/// tragen neue Varianten automatisch mit. `PowerupWord` lebt in `powerup.rs`
+/// (W2-Layout); das Substrat referenziert es nur.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum EntityKind {
     PowerupWord(PowerupWord),
 }
 
-/// Opaker Powerup-Payload. Im Substrat (W1) nur ein zu tippendes Wort; das
-/// Layout (Origin/Achse/Reversed, Keystroke→Tile-Mapping) kommt additiv in
-/// W2 (`powerup.rs`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PowerupWord {
-    pub word: String,
-}
+/// Re-Export: das Wort-Layout lebt jetzt in `powerup.rs` (W2). Der Re-Export
+/// hält bestehende `arena::PowerupWord`-Pfade (net-Sync, Render) stabil, ohne
+/// das Substrat ans Layout zu koppeln.
+pub use crate::game::powerup::PowerupWord;
 
 /// Die Sim-Welt: eine sparse Sammlung platzierter Entitäten + monotone
 /// ID-Vergabe. **Kein** `bounds`/`terrain` — diese kommen später additiv,
@@ -97,7 +95,13 @@ mod tests {
     use super::*;
 
     fn powerup(word: &str) -> EntityKind {
-        EntityKind::PowerupWord(PowerupWord { word: word.into() })
+        use crate::game::powerup::Axis;
+        EntityKind::PowerupWord(PowerupWord {
+            name: word.into(),
+            origin: (0, 0),
+            axis: Axis::Horizontal,
+            reversed: false,
+        })
     }
 
     #[test]

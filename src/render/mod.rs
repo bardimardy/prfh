@@ -206,18 +206,29 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena) {
     let mut grid: Vec<Vec<Option<(char, Style)>>> = vec![vec![None; w as usize]; h as usize];
 
     // Entitäten zuerst zeichnen (Trails liegen optisch darüber). Dieselbe
-    // cursor-zentrierte Transform wie die Tiles. Dezentes Ghost-Styling
-    // (genaues Look&Feel: W3).
+    // cursor-zentrierte Transform wie die Tiles. Mehr-Tile-Wörter: jedes Tile
+    // an seiner Position. Dezentes Ghost-Styling (Shimmer-Look: Task 7).
     for e in &arena.entities {
-        let rx = e.pos.0 - cursor.0 + center.0;
-        let ry = e.pos.1 - cursor.1 + center.1;
-        if rx < 0 || ry < 0 || rx >= w || ry >= h {
-            continue;
+        match &e.kind {
+            EntityKind::PowerupWord(pw) => {
+                let letters: Vec<char> = pw.name.chars().collect();
+                for (i, tile) in pw.tiles().iter().enumerate() {
+                    let rx = tile.0 - cursor.0 + center.0;
+                    let ry = tile.1 - cursor.1 + center.1;
+                    if rx < 0 || ry < 0 || rx >= w || ry >= h {
+                        continue;
+                    }
+                    // reversed: p_i zeigt name[n-1-i]; sonst name[i].
+                    let ch = if pw.reversed {
+                        letters[letters.len() - 1 - i]
+                    } else {
+                        letters[i]
+                    };
+                    grid[ry as usize][rx as usize] =
+                        Some((ch, Style::default().fg(theme::TEXT_DIM)));
+                }
+            }
         }
-        let ch = match &e.kind {
-            EntityKind::PowerupWord(pw) => pw.word.chars().next().unwrap_or('◆'),
-        };
-        grid[ry as usize][rx as usize] = Some((ch, Style::default().fg(theme::TEXT_DIM)));
     }
 
     // Alle Tiles aller Spieler nach tick sortieren, damit das zuletzt
@@ -327,13 +338,20 @@ mod tests {
 
     #[test]
     fn draw_world_renders_arena_entity_at_expected_cell() {
-        use crate::game::arena::{EntityKind, PowerupWord};
+        use crate::game::arena::EntityKind;
+        use crate::game::powerup::{Axis, PowerupWord};
         let mut app = App::new();
         // Offset vom Cursor (0,0), damit der Cursor-Marker die Entität nicht
         // überdeckt. 'z' kommt im HUD nicht vor → eindeutiger Treffer.
+        // origin (5,-2), horizontal, not reversed → p_0=(5,-2) zeigt 'z'.
         app.arena_mut().unwrap().spawn(
             (5, -2),
-            EntityKind::PowerupWord(PowerupWord { word: "zoom".into() }),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "zoom".into(),
+                origin: (5, -2),
+                axis: Axis::Horizontal,
+                reversed: false,
+            }),
         );
         // Screen-Transform: (5,-2) - cursor(0,0) + center(40,12) = (45,10).
         let backend = TestBackend::new(80, 24);
