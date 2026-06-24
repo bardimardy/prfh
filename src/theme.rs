@@ -21,6 +21,9 @@ pub const TEXT: Color = Color::Rgb(0xC8, 0xCC, 0xD4);
 pub const TEXT_DIM: Color = Color::Rgb(0x6A, 0x6E, 0x78);
 /// Warn-/Fehlerakzent.
 pub const DANGER: Color = Color::Rgb(0xE5, 0x4B, 0x4B);
+/// Heller Flash beim Pickup-Landen (pop-pulse). Bewusster Look-Zusatz über §2;
+/// warmes Off-White statt Reinweiß, damit es in die Dark-Palette passt.
+pub const PICKUP_FLASH: Color = Color::Rgb(0xFF, 0xF4, 0xE6);
 
 #[cfg(test)]
 mod tests {

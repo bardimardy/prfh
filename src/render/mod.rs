@@ -9,7 +9,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph},
     Frame,
 };
 use std::time::Duration;
@@ -66,6 +66,10 @@ pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
     if let Some(age) = cast_wave {
         let center = ((area.width / 2) as i32, (area.height / 2) as i32);
         draw_cast_ring(f.buffer_mut(), center, age, area);
+    }
+
+    if app.inventory_open() {
+        draw_inventory(f, area, app);
     }
 
     let self_dead = world.players.iter().any(|p| p.is_self && p.is_dead);
@@ -491,6 +495,66 @@ fn draw_cast_buffer(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+/// Inventar-Overlay (§8): top-right verankert, `InvSkin::Rounded` — gerundeter
+/// Rahmen, PANEL_BG-Füllung, blauer ACCENT-Titel ` POWERUPS `, §8-Atemzeilen.
+/// Wächst dynamisch nach unten (1 Zeile pro Item). Liegt als Top-Overlay über
+/// Welt und HUD; `Clear` räumt die Welt darunter.
+fn draw_inventory(f: &mut Frame, area: Rect, app: &App) {
+    const WIDTH: u16 = 34;
+    // §8: 1 Blank-Zeile über Items + 1 unter Items; +2 für den Rahmen.
+    let item_count = app.inventory.items.len().max(1); // „— leer —" wenn leer
+    let h = (item_count as u16 + 1 + 1 + 2).min(area.height); // items + 2×blank + 2×border
+    let rect = anchor_rect(area, Anchor::TopRight, WIDTH, h);
+
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme::TEXT_DIM))
+        .style(Style::default().bg(theme::PANEL_BG))
+        .title(Span::styled(
+            " POWERUPS ",
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    // §8: 1 PANEL_BG-Leerzeile über den Item-Zeilen.
+    let blank = Line::from(Span::styled(" ", Style::default().bg(theme::PANEL_BG)));
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(blank.clone());
+
+    if app.inventory.items.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  — leer —",
+            Style::default().fg(theme::TEXT_DIM).bg(theme::PANEL_BG),
+        )));
+    } else {
+        for item in &app.inventory.items {
+            // Name-Feld: feste Breite (layout-shift-invariant, relevant für Task 7).
+            lines.push(Line::from(Span::styled(
+                format!(" {:<8}", item.name),
+                Style::default()
+                    .fg(theme::TEXT)
+                    .bg(theme::PANEL_BG)
+                    .add_modifier(Modifier::BOLD),
+            )));
+        }
+    }
+
+    // §8: 1 PANEL_BG-Leerzeile unter den Item-Zeilen.
+    lines.push(blank);
+
+    f.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(theme::PANEL_BG)),
+        inner,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -791,6 +855,23 @@ mod tests {
             theme::HIGHLIGHT_BG,
             "i2 (logical1 < progress2) sollte getraced (HIGHLIGHT_BG) sein"
         );
+    }
+
+    #[test]
+    fn draw_inventory_renders_without_panic_when_open() {
+        let mut app = App::new_single();
+        app.inventory.add(crate::game::powerup::Powerup {
+            id: 1,
+            name: "dash".into(),
+            effect_tag: crate::game::powerup::EffectTag::Test,
+        });
+        assert!(app.inventory_open());
+        // Ganzer draw-Pfad darf nicht paniken (Inventar oben rechts, dynamische Höhe).
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| crate::render::draw(f, &mut app, std::time::Duration::from_millis(16)))
+            .unwrap();
     }
 
     #[test]
