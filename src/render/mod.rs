@@ -1,7 +1,7 @@
 use crate::app::App;
 use crate::game::arena::{Arena, EntityKind};
 use crate::game::world::WorldView;
-use crate::game::writing::Direction;
+use crate::game::writing::{Direction, TraceState};
 use crate::hud::{anchor_rect, Anchor};
 use crate::theme;
 use ratatui::{
@@ -47,7 +47,12 @@ pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
     let cast_wave = app.cast_wave;
     let cast_mode = app.cast_mode;
 
-    draw_world(f, area, &world, app.arena(), clock);
+    let trace: Option<(u32, usize)> = match app.trace.state {
+        TraceState::Tracing { id, progress } => Some((id, progress)),
+        TraceState::Idle => None,
+    };
+
+    draw_world(f, area, &world, app.arena(), clock, trace);
     draw_hud(f, area, app, &world);
 
     // Notifications oben-mitte, über der Welt (mutabel: halten ihre Effekte).
@@ -217,7 +222,14 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
 
 /// Frameless Welt: füllt `area` komplett, cursor-zentriert. Kein Rahmen, kein
 /// Titel — die HUD-Overlays liegen darüber.
-fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena, clock: Duration) {
+fn draw_world(
+    f: &mut Frame,
+    area: Rect,
+    world: &WorldView,
+    arena: &Arena,
+    clock: Duration,
+    trace: Option<(u32, usize)>,
+) {
     let w = area.width as i32;
     let h = area.height as i32;
     let center = (w / 2, h / 2);
@@ -275,6 +287,16 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena, clock
         match &e.kind {
             EntityKind::PowerupWord(pw) => {
                 let letters: Vec<char> = pw.name.chars().collect();
+                // Aktiver Trace auf GENAU diesem Wort? Dann Fortschritt + Next-Tile.
+                let active = trace.filter(|(tid, _)| *tid == e.id).map(|(_, p)| p);
+                let next_style = Style::default()
+                    .fg(theme::HIGHLIGHT_FG)
+                    .bg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD);
+                let traced_style = Style::default()
+                    .fg(theme::HIGHLIGHT_FG)
+                    .bg(theme::HIGHLIGHT_BG)
+                    .add_modifier(Modifier::BOLD);
                 for (i, tile) in pw.tiles().iter().enumerate() {
                     let rx = tile.0 - cursor.0 + center.0;
                     let ry = tile.1 - cursor.1 + center.1;
@@ -286,7 +308,19 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena, clock
                     } else {
                         letters[i]
                     };
-                    grid[ry as usize][rx as usize] = Some((ch, shimmer_style(t, i)));
+                    // Keystroke k landet auf keystroke_tile(k); bei reversed ist
+                    // das Tile-Index n-1-k. „logischer Fortschritt" dieses Tiles:
+                    let logical = if pw.reversed {
+                        letters.len() - 1 - i
+                    } else {
+                        i
+                    };
+                    let style = match active {
+                        Some(p) if logical < p => traced_style,
+                        Some(p) if logical == p => next_style,
+                        _ => shimmer_style(t, i),
+                    };
+                    grid[ry as usize][rx as usize] = Some((ch, style));
                 }
             }
         }
@@ -317,7 +351,10 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena, clock
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD)
         };
-        if player.is_self || !player.is_dead {
+        // Eigener Cursor-Pfeil wird während eines aktiven Trace unterdrückt —
+        // die Next-Tile-Hervorhebung (oben) steht an seiner Stelle (Pickup C).
+        let suppress_self = player.is_self && trace.is_some();
+        if (player.is_self || !player.is_dead) && !suppress_self {
             grid[ry as usize][rx as usize] = Some((arrow_ch, style));
         }
     }
@@ -651,5 +688,34 @@ mod tests {
             "z",
             "Powerup-Wort muss über dem Trail liegen (Top-Layer)"
         );
+    }
+
+    #[test]
+    fn trace_feedback_renders_many_frames_without_panic() {
+        // Aktiver Trace-State (getractes Wort + Next-Tile-Highlight + unterdrückter
+        // Cursor) über viele Frames: reine render-time-Math, darf nicht paniken.
+        use crate::game::arena::EntityKind;
+        use crate::game::powerup::{Axis, PowerupWord};
+        use crate::game::writing::TraceState;
+        let mut app = App::new();
+        app.arena_mut().unwrap().spawn(
+            (3, 0),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "dash".into(),
+                origin: (3, 0),
+                axis: Axis::Horizontal,
+                reversed: false,
+            }),
+        );
+        // Trace mitten im Wort: id muss zur gespawnten Entität passen.
+        let id = app.arena().entities[0].id;
+        app.trace.state = TraceState::Tracing { id, progress: 2 };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        for _ in 0..40 {
+            terminal
+                .draw(|f| draw(f, &mut app, Duration::from_millis(50)))
+                .unwrap();
+        }
     }
 }
