@@ -34,7 +34,7 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Widget},
+    widgets::{Block, BorderType, Borders, Clear, Paragraph, Widget},
     Frame, Terminal,
 };
 use tachyonfx::fx::{self, ExpandDirection};
@@ -557,6 +557,163 @@ impl Notif {
 
 // ───────────────────────────── Companion-State ──────────────────────────────
 
+// ───────────────────────── #44 Inventar-Explorationen ───────────────────────
+// Drei genuin neue W3-Looks (Szene 6, Taste `6`): Pickup → neue Inventar-Zeile,
+// Shadow-Autocomplete-Highlight im Cast und Panel-Position/§8-Stil.
+
+const PICKUP_DUR: f32 = 0.60;
+
+/// A/B des Pickup-Looks: eine NEUE Inventar-Zeile kommt rein, durchläuft einen
+/// vollen 360°-Hue-Sweep über gesättigter Basis und setzt sich auf `TEXT`-Grau
+/// (~550 ms, One-Shot). Render-time gerechnet (voller Sweep + präziser Settle,
+/// dieselbe Technik wie der gewählte Cast-Ring) → scroll-immun; im Spiel wandert
+/// das als benannter `effects`-Konstruktor bzw. Render-Helper.
+#[derive(Clone, Copy, PartialEq)]
+enum PickupStyle {
+    /// Slide von rechts + Regenbogen, dann Grau (Spec §2 wörtlich).
+    SlideRainbow,
+    /// wie Slide + kurzer Akzent-Glow (bg-Flash), wenn die Zeile landet.
+    SlideRainbowGlow,
+    /// sanfter: kein Slide, nur Fade-In + Regenbogen.
+    FadeRainbow,
+    /// Name erscheint Buchstabe für Buchstabe (Schreibmaschine) in Regenbogen.
+    Typewriter,
+    /// Buchstaben sind anfangs Zufalls-Glyphen und settlen staffelweise (Coalesce).
+    Scatter,
+    /// Greller Weiß/Akzent-Flash am Start, klingt zu Grau ab (Pop).
+    PopFlash,
+    /// ACCENT-Balken wischt von links weg und gibt den Namen frei.
+    BarWipe,
+    /// Zwei Hue-Pulse über `PICKUP_BASE`, dann Grau.
+    DoublePulse,
+    /// GEWÄHLT: Pop-Flash + Double-Pulse kombiniert — greller Pop beim Landen,
+    /// dann zwei Hue-Pulse, die auf Body-Grau ausklingen.
+    PopPulse,
+}
+impl PickupStyle {
+    fn label(self) -> &'static str {
+        match self {
+            PickupStyle::SlideRainbow => "slide+rainbow",
+            PickupStyle::SlideRainbowGlow => "slide+glow",
+            PickupStyle::FadeRainbow => "fade+rainbow",
+            PickupStyle::Typewriter => "typewriter",
+            PickupStyle::Scatter => "scatter",
+            PickupStyle::PopFlash => "pop-flash",
+            PickupStyle::BarWipe => "bar-wipe",
+            PickupStyle::DoublePulse => "double-pulse",
+            PickupStyle::PopPulse => "pop-pulse",
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            PickupStyle::SlideRainbow => PickupStyle::SlideRainbowGlow,
+            PickupStyle::SlideRainbowGlow => PickupStyle::FadeRainbow,
+            PickupStyle::FadeRainbow => PickupStyle::Typewriter,
+            PickupStyle::Typewriter => PickupStyle::Scatter,
+            PickupStyle::Scatter => PickupStyle::PopFlash,
+            PickupStyle::PopFlash => PickupStyle::BarWipe,
+            PickupStyle::BarWipe => PickupStyle::DoublePulse,
+            PickupStyle::DoublePulse => PickupStyle::PopPulse,
+            PickupStyle::PopPulse => PickupStyle::SlideRainbow,
+        }
+    }
+}
+
+/// A/B der Inventar-Fenster-Optik (§8-Showcase + 5 weitere Treatments). Alle
+/// top-right verankert, alle nach unten wachsend.
+#[derive(Clone, Copy, PartialEq)]
+enum InvSkin {
+    /// (a) Vollrahmen + " POWERUPS "-Titel (§8-Showcase).
+    BorderedBox,
+    /// (b) randlos mit dickem ACCENT-Balken an der linken Kante.
+    LeftBar,
+    /// (c) Titel als ACCENT-Pille/Badge mit Live-Count "POWERUPS · N".
+    PillBadge,
+    /// (d) gerundete Ecken (`BorderType::Rounded`).
+    Rounded,
+    /// (e) minimal: randlos, ACCENT-Underline-Header, Zeilen durch dim-Rule getrennt.
+    Minimal,
+    /// (f) kompakt: nur Name, schmaler, " PWR "-Titel.
+    Compact,
+}
+impl InvSkin {
+    fn label(self) -> &'static str {
+        match self {
+            InvSkin::BorderedBox => "bordered",
+            InvSkin::LeftBar => "left-bar",
+            InvSkin::PillBadge => "pill-badge",
+            InvSkin::Rounded => "rounded",
+            InvSkin::Minimal => "minimal",
+            InvSkin::Compact => "compact",
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            InvSkin::BorderedBox => InvSkin::LeftBar,
+            InvSkin::LeftBar => InvSkin::PillBadge,
+            InvSkin::PillBadge => InvSkin::Rounded,
+            InvSkin::Rounded => InvSkin::Minimal,
+            InvSkin::Minimal => InvSkin::Compact,
+            InvSkin::Compact => InvSkin::BorderedBox,
+        }
+    }
+}
+
+/// A/B des Shadow-Autocomplete-Highlights (Cast-Modus, Spec §7/§8): der getippte
+/// Prefix steckt im Pink-Kasten (`HIGHLIGHT_BG/FG`), der Rest bleibt lesbar.
+#[derive(Clone, Copy, PartialEq)]
+enum ShadowStyle {
+    /// (a) nur der Prefix-Kasten auf der gematchten Zeile.
+    BoxOnly,
+    /// (b) zusätzlich die nicht-matchenden Zeilen dimmen (`TEXT_DIM`).
+    BoxDim,
+}
+impl ShadowStyle {
+    fn label(self) -> &'static str {
+        match self {
+            ShadowStyle::BoxOnly => "box",
+            ShadowStyle::BoxDim => "box+dim",
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            ShadowStyle::BoxOnly => ShadowStyle::BoxDim,
+            ShadowStyle::BoxDim => ShadowStyle::BoxOnly,
+        }
+    }
+}
+
+/// A/B der Inventar-Panel-Position (§8 lässt sie offen).
+#[derive(Clone, Copy, PartialEq)]
+enum InvAnchor {
+    Center,
+    TopRight,
+    BottomRight,
+}
+impl InvAnchor {
+    fn label(self) -> &'static str {
+        match self {
+            InvAnchor::Center => "center",
+            InvAnchor::TopRight => "top-right",
+            InvAnchor::BottomRight => "bottom-right",
+        }
+    }
+    fn anchor(self) -> Anchor {
+        match self {
+            InvAnchor::Center => Anchor::Center,
+            InvAnchor::TopRight => Anchor::TopRight,
+            InvAnchor::BottomRight => Anchor::BottomRight,
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            InvAnchor::Center => InvAnchor::TopRight,
+            InvAnchor::TopRight => InvAnchor::BottomRight,
+            InvAnchor::BottomRight => InvAnchor::Center,
+        }
+    }
+}
+
 struct State {
     scene: u8,
     frames: bool,
@@ -579,6 +736,14 @@ struct State {
     cast_style: CastStyle,
     wave: Option<Wave>,
     replay: Duration, // Auto-Replay-Pause seit der letzten Welle (nur Szene 4)
+    // #44 Inventar-Explorationen (Szene 6)
+    pickup_style: PickupStyle,
+    pickup_anim: Option<Duration>, // Alter der laufenden Pickup-Zeile (None = ruht)
+    inv_rows: Vec<usize>,          // Pool-Indizes der eingesammelten Powerups
+    inv_skin: InvSkin,
+    shadow_style: ShadowStyle,
+    shadow_len: usize, // getippte Prefix-Länge gegen "dash" (0..=4)
+    inv_anchor: InvAnchor,
 }
 
 impl State {
@@ -604,7 +769,48 @@ impl State {
             cast_style: CastStyle::ManualRing,
             wave: None,
             replay: Duration::ZERO,
+            pickup_style: PickupStyle::PopPulse,
+            pickup_anim: None,
+            inv_rows: vec![0, 1], // ~2 Start-Zeilen
+            inv_skin: InvSkin::Rounded,
+            shadow_style: ShadowStyle::BoxDim,
+            shadow_len: 0,
+            inv_anchor: InvAnchor::TopRight,
         }
+    }
+
+    /// Szene 6 betreten: Panel auf, sauberer Demo-Zustand (~2 Zeilen).
+    fn enter_inventory_scene(&mut self) {
+        self.inv_open = true;
+        self.inv_closing = false;
+        self.inv_effect = fx::coalesce((400, Interpolation::SineOut));
+        self.shadow_len = 0;
+        self.inv_rows = vec![0, 1];
+        self.pickup_anim = None;
+    }
+
+    /// Pickup auslösen: nächstes Pool-Powerup ans Inventar anhängen, die neue
+    /// Zeile animiert rein, Panel wächst nach unten.
+    fn fire_pickup(&mut self) {
+        self.inv_open = true;
+        self.inv_closing = false;
+        self.inv_rows.push(self.inv_rows.len() % INV_POOL.len());
+        self.pickup_anim = Some(Duration::ZERO);
+    }
+
+    /// Inventar leeren — zum Vergleich leer vs. voll.
+    fn clear_inventory(&mut self) {
+        self.inv_rows.clear();
+        self.pickup_anim = None;
+    }
+
+    /// Cast-Prefix gegen "dash" weitersteppen (0..=4, wrappt zurück auf 0).
+    fn advance_shadow(&mut self) {
+        self.shadow_len = if self.shadow_len >= 4 {
+            0
+        } else {
+            self.shadow_len + 1
+        };
     }
 
     /// Trace einen Buchstaben weiter (wrappt am Wortende zurück auf 0).
@@ -665,6 +871,13 @@ impl State {
         if clear {
             self.wave = None;
         }
+        // Pickup-Zeile altert; nach `PICKUP_DUR` ruht sie als normale Grau-Zeile.
+        if let Some(age) = &mut self.pickup_anim {
+            *age += dt;
+            if age.as_secs_f32() > PICKUP_DUR {
+                self.pickup_anim = None;
+            }
+        }
         // Sanfter Auto-Replay in der finalen Cast-Szene: ~1.3 s Pause zwischen
         // Wellen, damit man den Look ohne Tastendruck im Loop sieht.
         if self.scene == 4 {
@@ -709,6 +922,17 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('3') => state.scene = 3,
                         KeyCode::Char('4') => state.scene = 4,
                         KeyCode::Char('5') => state.scene = 5,
+                        KeyCode::Char('6') => {
+                            state.scene = 6;
+                            state.enter_inventory_scene();
+                        }
+                        KeyCode::Char('g') => state.fire_pickup(),
+                        KeyCode::Char('x') => state.clear_inventory(),
+                        KeyCode::Char('j') => state.pickup_style = state.pickup_style.next(),
+                        KeyCode::Char('u') => state.inv_skin = state.inv_skin.next(),
+                        KeyCode::Char('h') => state.advance_shadow(),
+                        KeyCode::Char('l') => state.shadow_style = state.shadow_style.next(),
+                        KeyCode::Char('k') => state.inv_anchor = state.inv_anchor.next(),
                         KeyCode::Char('p') => state.word_style = state.word_style.next(),
                         KeyCode::Char('o') => state.word_axis = state.word_axis.next(),
                         KeyCode::Char('t') => state.advance_trace(),
@@ -746,6 +970,7 @@ fn ui(f: &mut Frame, state: &mut State, dt: Duration) {
         3 => layout_diegetic(f, area, state),
         4 => layout_powerup(f, area, state, dt),
         5 => layout_gallery(f, area, state),
+        6 => {} // Inventar-Lab: nur Welt-BG + Overlay + Hilfe (Panel via inv_open)
         _ => layout_corners(f, area, state),
     }
     draw_notifications(f, area, state, dt);
@@ -1236,30 +1461,394 @@ fn players_strip(f: &mut Frame, rect: Rect) {
     f.render_widget(Paragraph::new(line), rect);
 }
 
-fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
-    let rect = anchor_rect(area, Anchor::Center, 34, 9);
-    f.render_widget(Clear, rect);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .style(Style::default().fg(theme::ACCENT).bg(theme::PANEL_BG))
-        .title(" inventory ");
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
-    let rows = [
-        ("dash", "schärft Richtungs-Sprint"),
-        ("revert", "macht letzten Zug rückgängig"),
-        ("squash", "fasst Trail zusammen"),
-    ];
-    let lines: Vec<Line> = rows
+// Demo-Pool, aus dem `g` (grab) der Reihe nach Powerups einsammelt.
+const INV_POOL: &[(&str, &str)] = &[
+    ("dash", "schärft Richtungs-Sprint"),
+    ("revert", "macht letzten Zug rückgängig"),
+    ("squash", "fasst Trail zusammen"),
+    ("warp", "teleportiert ein Feld"),
+    ("purge", "löscht fremde Spur"),
+    ("bolt", "beschleunigt kurz"),
+    ("snap", "rastet aufs Raster"),
+    ("forge", "setzt einen Block"),
+];
+
+fn rgb_of(c: Color) -> (u8, u8, u8) {
+    match c {
+        Color::Rgb(r, g, b) => (r, g, b),
+        _ => (0, 0, 0),
+    }
+}
+
+/// Linearer RGB-Lerp zwischen zwei Farben (`t` ∈ 0..1).
+fn blend(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let (ar, ag, ab) = rgb_of(a);
+    let (br, bg, bb) = rgb_of(b);
+    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color::Rgb(l(ar, br), l(ag, bg), l(ab, bb))
+}
+
+/// Voller 360°-Hue-Sweep über gesättigter Basis, der zum Ende auf `TEXT`-Grau
+/// entsättigt (render-time → präziser Settle, vgl. Cast-Ring).
+fn rainbow_fg(p: f32) -> Color {
+    let hue = p * 360.0;
+    let sat = (1.0 - p) * 0.85;
+    let light = 0.62 + 0.10 * (1.0 - p);
+    blend(hsl(hue, sat, light), theme::TEXT, p)
+}
+
+fn blank_line() -> Line<'static> {
+    Line::from(Span::styled(" ", Style::default().bg(theme::PANEL_BG)))
+}
+
+fn rule_line(w: u16) -> Line<'static> {
+    Line::from(Span::styled(
+        "─".repeat(w as usize),
+        Style::default().fg(theme::TEXT_DIM).bg(theme::PANEL_BG),
+    ))
+}
+
+fn push_desc(spans: &mut Vec<Span<'static>>, desc: &str, fg: Color, bg: Color, show: bool) {
+    if show {
+        spans.push(Span::styled(desc.to_string(), Style::default().fg(fg).bg(bg)));
+    }
+}
+
+/// Eine ruhende Inventar-Zeile — mit Shadow-Autocomplete-Highlight, falls der
+/// getippte Prefix diese Zeile matcht (sonst ggf. gedimmt bei `BoxDim`).
+fn inv_row(
+    name: &str,
+    desc: &str,
+    state: &State,
+    shadow_active: bool,
+    typed: &str,
+    show_desc: bool,
+) -> Line<'static> {
+    if shadow_active && !typed.is_empty() && name.starts_with(typed) {
+        // Highlight ist eine REINE Stiländerung über exakt dieselben Zeichen:
+        // Leerzeichen + prefix + (rest+pad). prefix und rest+pad ergeben zusammen
+        // immer 8 Spalten (= `{name:<8}`), also ist das Namensfeld mit/ohne Box
+        // identisch breit — kein Spaltenversatz, `desc` startet gleich. (Der
+        // frühere Bug: ein extra Trailing-Space hier machte die Zeile 1 Spalte breiter.)
+        let len = typed.chars().count().min(name.chars().count());
+        let prefix: String = name.chars().take(len).collect();
+        let rest: String = name.chars().skip(len).collect();
+        let pad = " ".repeat(8usize.saturating_sub(name.chars().count()));
+        let mut spans = vec![
+            Span::styled(" ", Style::default().bg(theme::PANEL_BG)),
+            Span::styled(
+                prefix,
+                Style::default()
+                    .fg(theme::HIGHLIGHT_FG)
+                    .bg(theme::HIGHLIGHT_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("{rest}{pad}"),
+                Style::default().fg(theme::TEXT).bg(theme::PANEL_BG),
+            ),
+        ];
+        push_desc(&mut spans, desc, theme::TEXT_DIM, theme::PANEL_BG, show_desc);
+        return Line::from(spans);
+    }
+    let dim = shadow_active && matches!(state.shadow_style, ShadowStyle::BoxDim);
+    let name_fg = if dim { theme::TEXT_DIM } else { theme::TEXT };
+    let modi = if dim {
+        Modifier::empty()
+    } else {
+        Modifier::BOLD
+    };
+    let mut spans = vec![Span::styled(
+        format!(" {name:<8}"),
+        Style::default().fg(name_fg).bg(theme::PANEL_BG).add_modifier(modi),
+    )];
+    push_desc(&mut spans, desc, theme::TEXT_DIM, theme::PANEL_BG, show_desc);
+    Line::from(spans)
+}
+
+/// Die gerade eingesammelte Zeile, animiert nach gewähltem `PickupStyle`. Alle
+/// Varianten sind One-Shots (~`PICKUP_DUR`) auf dem statischen Zeilen-Rect —
+/// render-time gerechnet, damit der Look präzise auf Body-Grau landet.
+fn animated_pickup_line(
+    style: PickupStyle,
+    age: Duration,
+    name: &str,
+    desc: &str,
+    show_desc: bool,
+) -> Line<'static> {
+    let p = (age.as_secs_f32() / PICKUP_DUR).clamp(0.0, 1.0);
+    let fg = rainbow_fg(p);
+    let panel = theme::PANEL_BG;
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    match style {
+        PickupStyle::SlideRainbow => {
+            let pad = " ".repeat(((1.0 - p) * 10.0).round() as usize);
+            spans.push(Span::styled(
+                format!("{pad} {name:<8}"),
+                Style::default().fg(fg).bg(panel).add_modifier(Modifier::BOLD),
+            ));
+            push_desc(&mut spans, desc, fg, panel, show_desc);
+        }
+        PickupStyle::SlideRainbowGlow => {
+            let pad = " ".repeat(((1.0 - p) * 10.0).round() as usize);
+            let g = (1.0 - ((p - 0.8).abs() / 0.2)).clamp(0.0, 1.0);
+            let bg = if g > 0.02 {
+                blend(panel, theme::ACCENT, g * 0.8)
+            } else {
+                panel
+            };
+            spans.push(Span::styled(
+                format!("{pad} {name:<8}"),
+                Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+            ));
+            push_desc(&mut spans, desc, fg, bg, show_desc);
+        }
+        PickupStyle::FadeRainbow => {
+            let f = blend(panel, fg, p.max(0.15));
+            spans.push(Span::styled(
+                format!(" {name:<8}"),
+                Style::default().fg(f).bg(panel).add_modifier(Modifier::BOLD),
+            ));
+            push_desc(&mut spans, desc, f, panel, show_desc);
+        }
+        PickupStyle::Typewriter => {
+            let n = name.chars().count();
+            let k = ((p * n as f32).ceil() as usize).min(n);
+            let shown: String = name.chars().take(k).collect();
+            spans.push(Span::styled(
+                format!(" {shown}"),
+                Style::default().fg(fg).bg(panel).add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(
+                " ".repeat(8usize.saturating_sub(k)),
+                Style::default().bg(panel),
+            ));
+            push_desc(&mut spans, desc, theme::TEXT_DIM, panel, show_desc);
+        }
+        PickupStyle::Scatter => {
+            // Pseudo-Coalesce: jeder Buchstabe ist anfangs ein Zufalls-Glyph und
+            // settelt staffelweise (linke Buchstaben zuerst).
+            const GLYPHS: [char; 7] = ['#', '*', '%', '░', '▒', '·', '+'];
+            let cnt = name.chars().count().max(1);
+            let frame = (p * 12.0) as u64;
+            let s: String = name
+                .chars()
+                .enumerate()
+                .map(|(i, ch)| {
+                    let settled = p > 0.25 + 0.55 * (i as f32 / cnt as f32);
+                    if settled {
+                        ch
+                    } else {
+                        let h = (i as u64).wrapping_mul(2_654_435_761) ^ frame.wrapping_mul(40_503);
+                        GLYPHS[(h % 7) as usize]
+                    }
+                })
+                .collect();
+            spans.push(Span::styled(
+                format!(" {s:<8}"),
+                Style::default().fg(fg).bg(panel).add_modifier(Modifier::BOLD),
+            ));
+            push_desc(&mut spans, desc, fg, panel, show_desc);
+        }
+        PickupStyle::PopFlash => {
+            // Greller Weiß/Akzent-Flash am Start, klingt zu TEXT/Panel ab.
+            let flash = (1.0 - p).powi(2);
+            let f = blend(theme::TEXT, Color::Rgb(255, 255, 255), flash);
+            let bg = blend(panel, theme::ACCENT, flash * 0.7);
+            spans.push(Span::styled(
+                format!(" {name:<8}"),
+                Style::default().fg(f).bg(bg).add_modifier(Modifier::BOLD),
+            ));
+            push_desc(&mut spans, desc, blend(theme::TEXT_DIM, theme::TEXT, flash), bg, show_desc);
+        }
+        PickupStyle::BarWipe => {
+            // ACCENT-Balken wischt von links weg und gibt den Namen frei.
+            let total = 8usize;
+            let revealed = ((p * total as f32).round() as usize).min(total);
+            let name_pad = format!("{name:<8}");
+            let shown: String = name_pad.chars().take(revealed).collect();
+            let bar = "█".repeat(total - revealed);
+            spans.push(Span::styled(
+                format!(" {shown}"),
+                Style::default().fg(theme::TEXT).bg(panel).add_modifier(Modifier::BOLD),
+            ));
+            spans.push(Span::styled(bar, Style::default().fg(theme::ACCENT).bg(panel)));
+            push_desc(&mut spans, desc, theme::TEXT_DIM, panel, show_desc);
+        }
+        PickupStyle::DoublePulse => {
+            // Zwei Hue-Pulse über `PICKUP_BASE`, dann ruhig auf Grau.
+            let pulse =
+                ((1.0 - p) * (0.5 + 0.5 * (std::f32::consts::PI * 4.0 * p).sin())).clamp(0.0, 1.0);
+            let f = blend(theme::TEXT, theme::PICKUP_BASE, pulse);
+            spans.push(Span::styled(
+                format!(" {name:<8}"),
+                Style::default().fg(f).bg(panel).add_modifier(Modifier::BOLD),
+            ));
+            push_desc(&mut spans, desc, theme::TEXT_DIM, panel, show_desc);
+        }
+        PickupStyle::PopPulse => {
+            // GEWÄHLT (Kombination): erst ein kurzer, greller Pop-Flash beim Landen
+            // (weiß über Akzent-bg, in ~30 % abgeklungen), dann die zwei Hue-Pulse
+            // über `PICKUP_BASE`, die präzise auf Body-Grau ausklingen.
+            let flash = (1.0 - p / 0.30).clamp(0.0, 1.0).powi(2);
+            let pulse =
+                ((1.0 - p) * (0.5 + 0.5 * (std::f32::consts::PI * 4.0 * p).sin())).clamp(0.0, 1.0);
+            let base = blend(theme::TEXT, theme::PICKUP_BASE, pulse);
+            let f = blend(base, Color::Rgb(255, 255, 255), flash);
+            let bg = blend(panel, theme::ACCENT, flash * 0.7);
+            spans.push(Span::styled(
+                format!(" {name:<8}"),
+                Style::default().fg(f).bg(bg).add_modifier(Modifier::BOLD),
+            ));
+            push_desc(&mut spans, desc, blend(theme::TEXT_DIM, theme::TEXT, flash), bg, show_desc);
+        }
+    }
+    Line::from(spans)
+}
+
+/// Item-Zeilen des Inventars; die zuletzt hinzugefügte Zeile animiert, solange
+/// `pickup_anim` läuft.
+fn item_lines(state: &State, show_desc: bool) -> Vec<Line<'static>> {
+    let shadow_active = state.shadow_len > 0;
+    let typed: String = "dash".chars().take(state.shadow_len).collect();
+    let last = state.inv_rows.len().saturating_sub(1);
+    state
+        .inv_rows
         .iter()
-        .map(|(name, desc)| {
-            Line::from(vec![
-                Span::styled(format!(" {name:<8}"), Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD)),
-                Span::styled((*desc).to_string(), Style::default().fg(theme::TEXT_DIM)),
-            ])
+        .enumerate()
+        .map(|(i, &pi)| {
+            let (name, desc) = INV_POOL[pi];
+            match state.pickup_anim {
+                Some(age) if i == last => {
+                    animated_pickup_line(state.pickup_style, age, name, desc, show_desc)
+                }
+                _ => inv_row(name, desc, state, shadow_active, &typed, show_desc),
+            }
         })
-        .collect();
-    f.render_widget(Paragraph::new(lines).style(Style::default().bg(theme::PANEL_BG)), inner);
+        .collect()
+}
+
+/// Inventar-Overlay (Szene 6): top-right verankert, wächst nach unten, mit dem
+/// gewählten `InvSkin` (§8-Showcase + 5 weitere Treatments).
+fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
+    let skin = state.inv_skin;
+    let show_desc = !matches!(skin, InvSkin::Compact);
+    let width: u16 = if matches!(skin, InvSkin::Compact) { 24 } else { 42 };
+    let inner_w = width.saturating_sub(2);
+    let bordered = matches!(
+        skin,
+        InvSkin::BorderedBox | InvSkin::Rounded | InvSkin::Compact
+    );
+    let row_rule = matches!(skin, InvSkin::Minimal);
+
+    // Inhalt aufbauen (Header je Skin + Item-Zeilen + §8-Atemzeilen).
+    let mut content: Vec<Line> = Vec::new();
+    if bordered {
+        content.push(blank_line()); // §8: 1 BG-Zeile über dem (Border-)Header
+    } else {
+        match skin {
+            InvSkin::PillBadge => {
+                content.push(blank_line());
+                content.push(Line::from(Span::styled(
+                    format!(" POWERUPS · {} ", state.inv_rows.len()),
+                    Style::default()
+                        .fg(theme::HIGHLIGHT_FG)
+                        .bg(theme::ACCENT)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                content.push(blank_line());
+            }
+            InvSkin::LeftBar => {
+                content.push(blank_line());
+                content.push(Line::from(Span::styled(
+                    "  POWERUPS",
+                    Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                )));
+                content.push(blank_line());
+            }
+            InvSkin::Minimal => {
+                content.push(Line::from(Span::styled(
+                    "  POWERUPS",
+                    Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                )));
+                content.push(rule_line(inner_w));
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    let items = item_lines(state, show_desc);
+    if items.is_empty() {
+        content.push(Line::from(Span::styled(
+            "  — leer —",
+            Style::default().fg(theme::TEXT_DIM).bg(theme::PANEL_BG),
+        )));
+    }
+    for (i, line) in items.into_iter().enumerate() {
+        if row_rule && i > 0 {
+            content.push(rule_line(inner_w));
+        }
+        content.push(line);
+    }
+    if bordered {
+        content.push(blank_line()); // §8: 1 BG-Zeile unter den Zeilen
+    }
+
+    let h = (content.len() as u16 + if bordered { 2 } else { 0 }).max(3);
+    let rect = anchor_rect(area, state.inv_anchor.anchor(), width, h);
+    f.render_widget(Clear, rect);
+
+    let para_rect = if bordered {
+        let bt = if matches!(skin, InvSkin::Rounded) {
+            BorderType::Rounded
+        } else {
+            BorderType::Plain
+        };
+        let title = if matches!(skin, InvSkin::Compact) {
+            " PWR "
+        } else {
+            " POWERUPS "
+        };
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(bt)
+            .border_style(Style::default().fg(theme::TEXT_DIM))
+            .style(Style::default().bg(theme::PANEL_BG))
+            .title(Span::styled(
+                title,
+                Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            ));
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
+        inner
+    } else {
+        // Randlos: Hintergrund selbst füllen.
+        f.render_widget(
+            Block::default().style(Style::default().bg(theme::PANEL_BG)),
+            rect,
+        );
+        if matches!(skin, InvSkin::LeftBar) {
+            for y in rect.top()..rect.bottom() {
+                if let Some(c) = f.buffer_mut().cell_mut((rect.left(), y)) {
+                    c.set_char('█').set_fg(theme::ACCENT).set_bg(theme::PANEL_BG);
+                }
+            }
+            Rect {
+                x: rect.left() + 2,
+                y: rect.top(),
+                width: rect.width.saturating_sub(2),
+                height: rect.height,
+            }
+        } else {
+            rect
+        }
+    };
+
+    f.render_widget(
+        Paragraph::new(content).style(Style::default().bg(theme::PANEL_BG)),
+        para_rect,
+    );
     state.inv_effect.process(dt.into(), f.buffer_mut(), rect);
 }
 
@@ -1314,7 +1903,55 @@ fn draw_help(f: &mut Frame, area: Rect, state: &State) {
                 format!("b buf:{} ", if state.cast_on { "on" } else { "off" }),
                 Style::default().fg(theme::TEXT_DIM),
             ),
-            Span::styled("· 5 gallery · q", Style::default().fg(theme::TEXT_DIM)),
+            Span::styled("· 5 gallery · 6 inv-lab · q", Style::default().fg(theme::TEXT_DIM)),
+        ]);
+        f.render_widget(Paragraph::new(line).style(bg), rect);
+        return;
+    }
+
+    if state.scene == 6 {
+        let typed: String = "dash".chars().take(state.shadow_len).collect();
+        let shadow_disp = if state.shadow_len == 0 {
+            "—".to_string()
+        } else {
+            format!("{typed}|")
+        };
+        let line = Line::from(vec![
+            tag("hud_lab"),
+            Span::styled(" 6:inv ", Style::default().fg(theme::ACCENT)),
+            Span::styled("│ ", Style::default().fg(theme::TEXT_DIM)),
+            Span::styled(
+                format!("g grab({}) ", state.inv_rows.len()),
+                Style::default()
+                    .fg(theme::PICKUP_BASE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("x clear ", Style::default().fg(theme::TEXT_DIM)),
+            Span::styled(
+                format!("u skin:{} ", state.inv_skin.label()),
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("j pickup:{} ", state.pickup_style.label()),
+                Style::default().fg(theme::TEXT),
+            ),
+            Span::styled(
+                format!("h type:{shadow_disp} "),
+                Style::default()
+                    .fg(theme::HIGHLIGHT_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("l shadow:{} ", state.shadow_style.label()),
+                Style::default().fg(theme::TEXT_DIM),
+            ),
+            Span::styled(
+                format!("k pos:{} ", state.inv_anchor.label()),
+                Style::default().fg(theme::TEXT_DIM),
+            ),
+            Span::styled("· 4 · q", Style::default().fg(theme::TEXT_DIM)),
         ]);
         f.render_widget(Paragraph::new(line).style(bg), rect);
         return;
@@ -1350,7 +1987,7 @@ fn draw_help(f: &mut Frame, area: Rect, state: &State) {
         Span::styled(format!("m mode:{} ", state.mode.label()), Style::default().fg(theme::HIGHLIGHT_BG).add_modifier(Modifier::BOLD)),
         Span::styled(format!("i reveal:{} ", state.reveal.label()), Style::default().fg(reveal_dim)),
         Span::styled(format!("c cursor:{} ", state.cursor.label()), Style::default().fg(theme::ACCENT)),
-        Span::styled("· 1/2/3/4 · v inv · f frames · q", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled("· 1/2/3/4/6 · v inv · f frames · q", Style::default().fg(theme::TEXT_DIM)),
     ]);
     f.render_widget(Paragraph::new(line).style(bg), rect);
 }
