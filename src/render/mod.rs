@@ -32,7 +32,8 @@ pub fn process_effects<K: Clone + std::fmt::Debug + Ord>(
 /// schweben als Overlays an Ankern darüber. `elapsed` treibt die zeitbasierten
 /// Notifications (deshalb `&mut App`).
 pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
-    // Animations-Uhren render-time fortschreiben (Cast-Welle, Pickup).
+    // Animations-Uhren render-time fortschreiben (shimmer-Phase, Cast-Welle, Pickup).
+    app.anim_clock += elapsed;
     if let Some(age) = app.cast_wave.as_mut() {
         *age += elapsed;
         if age.as_secs_f32() > RING_DUR {
@@ -43,6 +44,7 @@ pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
 
     let area = f.area();
     let world = app.world_view();
+    let clock = app.anim_clock;
     let cast_wave = app.cast_wave;
     let cast_mode = app.cast_mode;
 
@@ -51,7 +53,7 @@ pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
         TraceState::Idle => None,
     };
 
-    draw_world(f, area, &world, app.arena(), trace);
+    draw_world(f, area, &world, app.arena(), clock, trace);
     draw_hud(f, area, app, &world);
 
     // Notifications oben-mitte, über der Welt (mutabel: halten ihre Effekte).
@@ -230,6 +232,7 @@ fn draw_world(
     area: Rect,
     world: &WorldView,
     arena: &Arena,
+    clock: Duration,
     trace: Option<(u32, usize)>,
 ) {
     let w = area.width as i32;
@@ -240,6 +243,7 @@ fn draw_world(
     let cursor = self_player.map(|p| p.cursor).unwrap_or((0, 0));
 
     let mut grid: Vec<Vec<Option<(char, Style)>>> = vec![vec![None; w as usize]; h as usize];
+    let t = clock.as_secs_f32();
 
     // Alle Tiles aller Spieler nach tick sortieren, damit das zuletzt
     // geschriebene Tile an jeder Zelle gewinnt (fixt Host-vs-Client-Reihenfolge).
@@ -283,8 +287,7 @@ fn draw_world(
 
     // Powerup-Wörter NACH den Trails zeichnen → Top-Layer: der eigene Trail
     // überdeckt das Wort nicht mehr (Pickup-Gefühl B). Cursor-zentrierte
-    // Transform wie die Tiles; jedes Tile an seiner Position, Ghost-Idle-Look
-    // (TEXT_DIM, kein Modifier) — klar vom aktiven Trail unterscheidbar.
+    // Transform wie die Tiles; jedes Tile an seiner Position, Shimmer-Idle-Look.
     for e in &arena.entities {
         match &e.kind {
             EntityKind::PowerupWord(pw) => {
@@ -320,7 +323,7 @@ fn draw_world(
                     let style = match active {
                         Some(p) if logical < p => traced_style,
                         Some(p) if logical == p => next_style,
-                        _ => Style::default().fg(theme::TEXT_DIM),
+                        _ => shimmer_style(t, i),
                     };
                     grid[ry as usize][rx as usize] = Some((ch, style));
                 }
@@ -380,6 +383,19 @@ fn draw_world(
 
 /// Dauer der Cast-Ring-Animation (Sekunden) — snappy/dynamisch.
 const RING_DUR: f32 = 0.38;
+
+/// shimmer Idle-Style eines Powerup-Tiles: gray→white-Band, das übers Wort
+/// wandert. Reine Funktion aus `(t, index)` → scroll-immun (Skill `effects`,
+/// Learning #37): das Wort scrollt cursor-zentriert mit, ein tachyonfx-Zell-
+/// Effekt würde über logisch andere Zeichen schmieren.
+fn shimmer_style(t: f32, i: usize) -> Style {
+    let phase = t * 7.0 - i as f32 * 0.95;
+    let l = 0.5 + 0.5 * phase.sin();
+    let v = (0x55_u16 as f32 + (0xE6 - 0x55) as f32 * l).round() as u8;
+    Style::default()
+        .fg(Color::Rgb(v, v, (v as u16 + 7).min(255) as u8))
+        .add_modifier(Modifier::BOLD)
+}
 
 /// Linearer RGB-Lerp zwischen zwei Farben (`t` ∈ 0..1).
 fn blend(a: Color, b: Color, t: f32) -> Color {
@@ -672,44 +688,6 @@ mod tests {
     }
 
     #[test]
-    fn idle_powerup_word_renders_with_ghost_style() {
-        // Nicht eingesammeltes Wort ohne aktiven Trace → Ghost-Look (TEXT_DIM fg,
-        // kein Hintergrund, kein Bold) — klar vom aktiven Trail unterscheidbar.
-        use crate::game::arena::EntityKind;
-        use crate::game::powerup::{Axis, PowerupWord};
-        let mut app = App::new();
-        app.arena_mut().unwrap().spawn(
-            (5, -2),
-            EntityKind::PowerupWord(PowerupWord {
-                name: "zoom".into(),
-                origin: (5, -2),
-                axis: Axis::Horizontal,
-                reversed: false,
-            }),
-        );
-        // Screen-Transform: (5,-2) - cursor(0,0) + center(40,12) = (45,10).
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
-        let buf = terminal.backend().buffer();
-        let cell = buf.cell((45, 10)).unwrap();
-        assert_eq!(
-            cell.fg,
-            theme::TEXT_DIM,
-            "Ghost-Idle-Tile muss TEXT_DIM fg haben"
-        );
-        assert_eq!(
-            cell.bg,
-            Color::Reset,
-            "Ghost-Idle-Tile darf keinen Hintergrund setzen"
-        );
-        assert!(
-            !cell.modifier.contains(ratatui::style::Modifier::BOLD),
-            "Ghost-Idle-Tile darf nicht BOLD sein"
-        );
-    }
-
-    #[test]
     fn topbar_shows_only_dir_and_combo() {
         let mut app = App::new();
         let out = render_to_string(&mut app);
@@ -778,7 +756,7 @@ mod tests {
 
     #[test]
     fn cast_flow_renders_many_frames_without_panic() {
-        // Cast-Welle + Cast-Buffer + ghost-Wort über viele Frames: darf nicht
+        // Cast-Welle + Cast-Buffer + shimmer-Wort über viele Frames: darf nicht
         // paniken (render-time-Math, kein tachyonfx).
         use crate::game::arena::EntityKind;
         use crate::game::powerup::{Axis, PowerupWord};
@@ -864,7 +842,7 @@ mod tests {
     #[test]
     fn trace_feedback_colors_forward_word() {
         // Nicht-reversed "dash": logical == physischer Index i. progress=2 →
-        // i0,i1 getraced (HIGHLIGHT_BG), i2 next (ACCENT), i3 ghost/idle (weder/noch).
+        // i0,i1 getraced (HIGHLIGHT_BG), i2 next (ACCENT), i3 shimmer (weder/noch).
         use crate::game::arena::EntityKind;
         use crate::game::powerup::{Axis, PowerupWord};
         use crate::game::writing::TraceState;
@@ -902,14 +880,14 @@ mod tests {
             theme::ACCENT,
             "i2 (logical2 == progress2) sollte Next-Tile (ACCENT) sein"
         );
-        let ghost_bg = buf.cell((48, 10)).unwrap().bg;
+        let shimmer_bg = buf.cell((48, 10)).unwrap().bg;
         assert_ne!(
-            ghost_bg,
+            shimmer_bg,
             theme::HIGHLIGHT_BG,
             "i3 (logical3 > progress2) sollte NICHT getraced sein"
         );
         assert_ne!(
-            ghost_bg,
+            shimmer_bg,
             theme::ACCENT,
             "i3 (logical3 > progress2) sollte NICHT Next-Tile sein"
         );
@@ -918,7 +896,7 @@ mod tests {
     #[test]
     fn trace_feedback_colors_reversed_word() {
         // Reversed "dash": physisches Tile i zeigt letters[n-1-i], logical = n-1-i.
-        // progress=2 → i0 logical3 ghost/idle, i1 logical2 next (ACCENT),
+        // progress=2 → i0 logical3 shimmer, i1 logical2 next (ACCENT),
         // i2 logical1 getraced (HIGHLIGHT_BG). Das ist die riskante Index-Math.
         use crate::game::arena::EntityKind;
         use crate::game::powerup::{Axis, PowerupWord};
@@ -941,14 +919,14 @@ mod tests {
         let buf = terminal.backend().buffer();
 
         // Screen-Transform wie oben: physische Tiles 45,46,47,48 für i=0..3.
-        let ghost_bg = buf.cell((45, 10)).unwrap().bg;
+        let shimmer_bg = buf.cell((45, 10)).unwrap().bg;
         assert_ne!(
-            ghost_bg,
+            shimmer_bg,
             theme::HIGHLIGHT_BG,
             "i0 (logical3 > progress2) sollte NICHT getraced sein"
         );
         assert_ne!(
-            ghost_bg,
+            shimmer_bg,
             theme::ACCENT,
             "i0 (logical3 > progress2) sollte NICHT Next-Tile sein"
         );
