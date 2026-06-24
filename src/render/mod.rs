@@ -32,7 +32,7 @@ pub fn process_effects<K: Clone + std::fmt::Debug + Ord>(
 /// schweben als Overlays an Ankern darüber. `elapsed` treibt die zeitbasierten
 /// Notifications (deshalb `&mut App`).
 pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
-    // Animations-Uhren render-time fortschreiben (shimmer-Phase, Cast-Welle).
+    // Animations-Uhren render-time fortschreiben (shimmer-Phase, Cast-Welle, Pickup).
     app.anim_clock += elapsed;
     if let Some(age) = app.cast_wave.as_mut() {
         *age += elapsed;
@@ -40,6 +40,7 @@ pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
             app.cast_wave = None;
         }
     }
+    app.advance_pickup_anim(elapsed);
 
     let area = f.area();
     let world = app.world_view();
@@ -396,6 +397,18 @@ fn shimmer_style(t: f32, i: usize) -> Style {
         .add_modifier(Modifier::BOLD)
 }
 
+/// Linearer RGB-Lerp zwischen zwei Farben (`t` ∈ 0..1).
+fn blend(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    let rgb = |c: Color| -> (u8, u8, u8) {
+        if let Color::Rgb(r, g, b) = c { (r, g, b) } else { (0, 0, 0) }
+    };
+    let (ar, ag, ab) = rgb(a);
+    let (br, bg, bb) = rgb(b);
+    let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    Color::Rgb(l(ar, br), l(ag, bg), l(ab, bb))
+}
+
 /// HSL→RGB für den Rainbow-Cast-Ring (helle, pastellige Farben).
 fn hsl(h: f32, s: f32, l: f32) -> Color {
     let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
@@ -495,6 +508,31 @@ fn draw_cast_buffer(f: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+/// Render-time pop-pulse Zeilen-Farbe für eine frisch eingesammelte Inventar-Zeile.
+///
+/// Phase `p = age / PICKUP_ANIM_DUR`:
+/// - Flash-Decay `(1 - p/0.30)²`: `PICKUP_FLASH` über `ACCENT`-bg, abgeklungen bei ~30 %.
+/// - Dann Doppel-Hue-Puls `(1-p)·(0.5 + 0.5·sin(4π·p))` über `PICKUP_BASE`,
+///   blendend nach `TEXT` (Body-Grau) bei p=1.
+///
+/// Kein tachyonfx; reine render-time-Math → scroll-immun + unit-testbar.
+fn popup_pulse_line(name: &str, age: Duration) -> Line<'static> {
+    use crate::app::PICKUP_ANIM_DUR;
+    use std::f32::consts::PI;
+    let p = (age.as_secs_f32() / PICKUP_ANIM_DUR.as_secs_f32()).clamp(0.0, 1.0);
+    // Flash: grelle PICKUP_FLASH-fg über ACCENT-bg, abgeklungen bis ~30 % der Dauer.
+    let flash = (1.0 - p / 0.30).clamp(0.0, 1.0).powi(2);
+    // Hue-Puls: zwei Wellenberge über PICKUP_BASE, die auf TEXT ausklingen.
+    let pulse = ((1.0 - p) * (0.5 + 0.5 * (PI * 4.0 * p).sin())).clamp(0.0, 1.0);
+    let base = blend(theme::TEXT, theme::PICKUP_BASE, pulse);
+    let fg = blend(base, theme::PICKUP_FLASH, flash);
+    let bg = blend(theme::PANEL_BG, theme::ACCENT, flash * 0.7);
+    Line::from(Span::styled(
+        format!(" {name:<8}"),
+        Style::default().fg(fg).bg(bg).add_modifier(Modifier::BOLD),
+    ))
+}
+
 /// Inventar-Overlay (§8): top-right verankert, `InvSkin::Rounded` — gerundeter
 /// Rahmen, PANEL_BG-Füllung, blauer ACCENT-Titel ` POWERUPS `, §8-Atemzeilen.
 /// Wächst dynamisch nach unten (1 Zeile pro Item). Liegt als Top-Overlay über
@@ -534,15 +572,21 @@ fn draw_inventory(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(theme::TEXT_DIM).bg(theme::PANEL_BG),
         )));
     } else {
-        for item in &app.inventory.items {
+        for (slot, item) in app.inventory.items.iter().enumerate() {
             // Name-Feld: feste Breite (layout-shift-invariant, relevant für Task 7).
-            lines.push(Line::from(Span::styled(
-                format!(" {:<8}", item.name),
-                Style::default()
-                    .fg(theme::TEXT)
-                    .bg(theme::PANEL_BG)
-                    .add_modifier(Modifier::BOLD),
-            )));
+            // Wenn diese Zeile gerade animiert (pop-pulse), Farbe render-time berechnen.
+            let line = if let Some(anim) = app.pickup_anim.as_ref().filter(|a| a.slot == slot) {
+                popup_pulse_line(&item.name, anim.age)
+            } else {
+                Line::from(Span::styled(
+                    format!(" {:<8}", item.name),
+                    Style::default()
+                        .fg(theme::TEXT)
+                        .bg(theme::PANEL_BG)
+                        .add_modifier(Modifier::BOLD),
+                ))
+            };
+            lines.push(line);
         }
     }
 
@@ -901,5 +945,22 @@ mod tests {
                 .draw(|f| draw(f, &mut app, Duration::from_millis(50)))
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn pickup_anim_renders_and_clears_without_panic() {
+        use crate::game::powerup::{EffectEvent, EffectTag, Powerup};
+        let mut app = App::new_single();
+        app.inventory.add(Powerup { id: 1, name: "dash".into(), effect_tag: EffectTag::Test });
+        app.apply_effect_event(EffectEvent::Pickup { slot: 0, name: "dash".into() });
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        // mehrere Frames über die Anim-Dauer hinaus — darf nicht paniken, Anim klärt
+        for _ in 0..50 {
+            terminal
+                .draw(|f| crate::render::draw(f, &mut app, std::time::Duration::from_millis(16)))
+                .unwrap();
+        }
+        assert!(app.pickup_anim.is_none(), "Anim nach Ablauf geräumt");
     }
 }
