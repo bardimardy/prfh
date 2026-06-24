@@ -572,10 +572,51 @@ fn draw_inventory(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(theme::TEXT_DIM).bg(theme::PANEL_BG),
         )));
     } else {
+        // Cast-Modus: gematchte Namen sammeln (Strings, um Borrow-Konflikte zu vermeiden).
+        let matched_names: Vec<String> = if app.cast_mode && !app.cast_buffer.is_empty() {
+            app.inventory
+                .prefix_matches(&app.cast_buffer)
+                .into_iter()
+                .map(|p| p.name.clone())
+                .collect()
+        } else {
+            Vec::new()
+        };
+
         for (slot, item) in app.inventory.items.iter().enumerate() {
-            // Name-Feld: feste Breite (layout-shift-invariant, relevant für Task 7).
-            // Wenn diese Zeile gerade animiert (pop-pulse), Farbe render-time berechnen.
-            let line = if let Some(anim) = app.pickup_anim.as_ref().filter(|a| a.slot == slot) {
+            // Name-Feld: feste Breite (layout-shift-invariant).
+            // PRÄZEDENZ: Cast-Modus hat Vorrang vor Pickup-Anim.
+            let line = if app.cast_mode {
+                // Shadow-Autocomplete-Highlight (box+dim, Companion Szene 6 `BoxDim`).
+                if matched_names.iter().any(|n| n == &item.name) {
+                    // Matched: Prefix als HIGHLIGHT_BG/FG-Kasten, Rest als TEXT.
+                    // WICHTIG: Zeichenanzahl bleibt exakt gleich — kein Layout-Shift.
+                    let typed_len = app.cast_buffer.chars().count().min(item.name.chars().count());
+                    let prefix: String = item.name.chars().take(typed_len).collect();
+                    let rest: String = item.name.chars().skip(typed_len).collect();
+                    let pad = " ".repeat(8usize.saturating_sub(item.name.chars().count()));
+                    Line::from(vec![
+                        Span::styled(" ", Style::default().bg(theme::PANEL_BG)),
+                        Span::styled(
+                            prefix,
+                            Style::default()
+                                .fg(theme::HIGHLIGHT_FG)
+                                .bg(theme::HIGHLIGHT_BG)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("{rest}{pad}"),
+                            Style::default().fg(theme::TEXT).bg(theme::PANEL_BG),
+                        ),
+                    ])
+                } else {
+                    // Nicht gematcht: gedimmt (TEXT_DIM, kein BOLD).
+                    Line::from(Span::styled(
+                        format!(" {:<8}", item.name),
+                        Style::default().fg(theme::TEXT_DIM).bg(theme::PANEL_BG),
+                    ))
+                }
+            } else if let Some(anim) = app.pickup_anim.as_ref().filter(|a| a.slot == slot) {
                 popup_pulse_line(&item.name, anim.age)
             } else {
                 Line::from(Span::styled(
@@ -962,5 +1003,23 @@ mod tests {
                 .unwrap();
         }
         assert!(app.pickup_anim.is_none(), "Anim nach Ablauf geräumt");
+    }
+
+    #[test]
+    fn shadow_highlight_renders_in_cast_mode_without_panic() {
+        use crate::game::powerup::{EffectTag, Powerup};
+        let mut app = App::new_single();
+        app.inventory.add(Powerup { id: 1, name: "dash".into(), effect_tag: EffectTag::Test });
+        app.inventory.add(Powerup { id: 2, name: "revert".into(), effect_tag: EffectTag::Test });
+        app.toggle_cast();
+        for c in "da".chars() {
+            app.on_char(c);
+        } // füllt cast_buffer "da"
+        assert_eq!(app.cast_buffer, "da");
+        let backend = ratatui::backend::TestBackend::new(80, 24);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| crate::render::draw(f, &mut app, std::time::Duration::from_millis(16)))
+            .unwrap();
     }
 }
