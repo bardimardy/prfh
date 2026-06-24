@@ -1,3 +1,4 @@
+use crate::game::powerup::PowerupWord;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -207,6 +208,10 @@ pub struct WritingEngine {
     /// Typing-pace gauge in `[0,1]`: rises per keystroke, decays per frame.
     /// Drives the dynamic visible trail length (fast typing → longer trail).
     pub pace: f32,
+    /// Während eines aktiven Trace gesetzt (von `app.rs`): unterdrückt die
+    /// Sofort-Trigger-Erkennung, damit die eigenen Wort-Buchstaben (z. B. „up"
+    /// in „update") nicht feuern (Powerup-Spec §6).
+    pub trace_suspended: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -215,6 +220,18 @@ pub enum StepResult {
     WroteAndTurned(Tile, Direction),
     WroteAndStopped(Tile),
     Erased,
+}
+
+impl StepResult {
+    /// Das in diesem Schritt geschriebene Tile (None bei `Erased`).
+    pub fn tile(&self) -> Option<&Tile> {
+        match self {
+            StepResult::Wrote(t)
+            | StepResult::WroteAndTurned(t, _)
+            | StepResult::WroteAndStopped(t) => Some(t),
+            StepResult::Erased => None,
+        }
+    }
 }
 
 impl WritingEngine {
@@ -229,6 +246,7 @@ impl WritingEngine {
             paused: false,
             tick: 0,
             pace: 0.0,
+            trace_suspended: false,
         }
     }
 
@@ -277,6 +295,10 @@ impl WritingEngine {
         if is_boundary {
             // Boundary char just resets the word buffer (immediate-mode model
             // means triggers have already fired the moment the word was complete).
+            self.current_word.clear();
+        } else if self.trace_suspended {
+            // Trace läuft: keine Trigger, Buffer leer halten (kein stale Trigger
+            // nach Trace-Ende). Tile wurde bereits geschrieben + Cursor bewegt.
             self.current_word.clear();
         } else {
             self.current_word.push(ch);
@@ -330,9 +352,228 @@ impl WritingEngine {
     }
 }
 
+/// Zustand der beobachtenden Pickup-Trace-FSM (Powerup-Spec §6).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum TraceState {
+    #[default]
+    Idle,
+    Tracing { id: u32, progress: usize },
+}
+
+/// Ergebnis eines `observe`-Schritts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TraceStep {
+    None,
+    Armed { id: u32 },
+    Advanced { id: u32, progress: usize },
+    Completed { id: u32 },
+    Reset,
+}
+
+/// Räumliches Arming-Trace: **beobachtet** jeden `on_char`-Schreibvorgang
+/// (Position, Zeichen, Laufrichtung) und steuert die Base-Mechanik nicht um.
+/// `id` ist die `EntityId` des Powerup-Worts in der Arena.
+#[derive(Debug, Clone, Default)]
+pub struct Trace {
+    pub state: TraceState,
+}
+
+impl Trace {
+    pub fn new() -> Self {
+        Self {
+            state: TraceState::Idle,
+        }
+    }
+
+    pub fn is_tracing(&self) -> bool {
+        matches!(self.state, TraceState::Tracing { .. })
+    }
+
+    /// Beobachtet ein geschriebenes Tile. `dir` ist die Laufrichtung zum
+    /// Schreibzeitpunkt. `words`: Kandidaten-Powerup-Wörter mit ihren EntityIds.
+    pub fn observe(
+        &mut self,
+        pos: (i32, i32),
+        ch: char,
+        dir: Direction,
+        words: &[(u32, &PowerupWord)],
+    ) -> TraceStep {
+        let ch = ch.to_ascii_lowercase();
+        match self.state {
+            TraceState::Idle => {
+                for (id, w) in words {
+                    if pos == w.entry_tile()
+                        && dir.delta() == w.run_direction()
+                        && w.expected_char(0) == Some(ch)
+                    {
+                        if w.len() <= 1 {
+                            return TraceStep::Completed { id: *id };
+                        }
+                        self.state = TraceState::Tracing {
+                            id: *id,
+                            progress: 1,
+                        };
+                        return TraceStep::Armed { id: *id };
+                    }
+                }
+                TraceStep::None
+            }
+            TraceState::Tracing { id, progress } => {
+                let Some((_, w)) = words.iter().find(|(wid, _)| *wid == id) else {
+                    self.state = TraceState::Idle;
+                    return TraceStep::Reset;
+                };
+                if w.keystroke_tile(progress) == Some(pos) && w.expected_char(progress) == Some(ch) {
+                    let next = progress + 1;
+                    if next >= w.len() {
+                        self.state = TraceState::Idle;
+                        TraceStep::Completed { id }
+                    } else {
+                        self.state = TraceState::Tracing { id, progress: next };
+                        TraceStep::Advanced { id, progress: next }
+                    }
+                } else {
+                    self.state = TraceState::Idle;
+                    TraceStep::Reset
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::game::powerup::{Axis, PowerupWord};
+
+    fn pw(name: &str, origin: (i32, i32), axis: Axis, reversed: bool) -> PowerupWord {
+        PowerupWord {
+            name: name.into(),
+            origin,
+            axis,
+            reversed,
+        }
+    }
+
+    #[test]
+    fn trace_arms_on_entry_tile_correct_dir_and_char() {
+        let w = pw("dash", (3, 0), Axis::Horizontal, false);
+        let words = [(7u32, &w)];
+        let mut t = Trace::new();
+        // Wrong char at entry → no arm.
+        assert_eq!(
+            t.observe((3, 0), 'x', Direction::Right, &words),
+            TraceStep::None
+        );
+        // Correct entry tile + dir + char → armed (progress 1).
+        assert_eq!(
+            t.observe((3, 0), 'd', Direction::Right, &words),
+            TraceStep::Armed { id: 7 }
+        );
+        assert!(t.is_tracing());
+    }
+
+    #[test]
+    fn trace_does_not_arm_on_wrong_direction() {
+        let w = pw("dash", (3, 0), Axis::Horizontal, false);
+        let words = [(7u32, &w)];
+        let mut t = Trace::new();
+        // Right tile + char but moving Down (not into the word) → no arm.
+        assert_eq!(
+            t.observe((3, 0), 'd', Direction::Down, &words),
+            TraceStep::None
+        );
+    }
+
+    #[test]
+    fn trace_advances_then_completes() {
+        let w = pw("dash", (3, 0), Axis::Horizontal, false);
+        let words = [(7u32, &w)];
+        let mut t = Trace::new();
+        t.observe((3, 0), 'd', Direction::Right, &words);
+        assert_eq!(
+            t.observe((4, 0), 'a', Direction::Right, &words),
+            TraceStep::Advanced { id: 7, progress: 2 }
+        );
+        assert_eq!(
+            t.observe((5, 0), 's', Direction::Right, &words),
+            TraceStep::Advanced { id: 7, progress: 3 }
+        );
+        assert_eq!(
+            t.observe((6, 0), 'h', Direction::Right, &words),
+            TraceStep::Completed { id: 7 }
+        );
+        assert!(!t.is_tracing());
+    }
+
+    #[test]
+    fn trace_resets_on_wrong_char() {
+        let w = pw("dash", (3, 0), Axis::Horizontal, false);
+        let words = [(7u32, &w)];
+        let mut t = Trace::new();
+        t.observe((3, 0), 'd', Direction::Right, &words);
+        assert_eq!(
+            t.observe((4, 0), 'z', Direction::Right, &words),
+            TraceStep::Reset
+        );
+        assert!(!t.is_tracing());
+    }
+
+    #[test]
+    fn trace_resets_on_turning_off_axis() {
+        // Player turned: the next written tile is not the expected axis tile.
+        let w = pw("dash", (3, 0), Axis::Horizontal, false);
+        let words = [(7u32, &w)];
+        let mut t = Trace::new();
+        t.observe((3, 0), 'd', Direction::Right, &words);
+        // Expected (4,0); player wrote (3,1) (turned down) → reset even if char ok.
+        assert_eq!(
+            t.observe((3, 1), 'a', Direction::Down, &words),
+            TraceStep::Reset
+        );
+    }
+
+    #[test]
+    fn trace_completes_reversed_word_typed_logically() {
+        // reversed "dash": entry (6,0) moving Left, letters still d,a,s,h.
+        let w = pw("dash", (3, 0), Axis::Horizontal, true);
+        let words = [(7u32, &w)];
+        let mut t = Trace::new();
+        assert_eq!(
+            t.observe((6, 0), 'd', Direction::Left, &words),
+            TraceStep::Armed { id: 7 }
+        );
+        assert_eq!(
+            t.observe((5, 0), 'a', Direction::Left, &words),
+            TraceStep::Advanced { id: 7, progress: 2 }
+        );
+        t.observe((4, 0), 's', Direction::Left, &words);
+        assert_eq!(
+            t.observe((3, 0), 'h', Direction::Left, &words),
+            TraceStep::Completed { id: 7 }
+        );
+    }
+
+    #[test]
+    fn step_result_exposes_written_tile() {
+        let mut e = WritingEngine::new((0, 0));
+        let r = e.on_char('a');
+        assert_eq!(r.tile().map(|t| t.pos), Some((0, 0)));
+        let r = e.on_backspace();
+        assert_eq!(r.tile(), None);
+    }
+
+    #[test]
+    fn suspended_trace_does_not_fire_triggers() {
+        let mut e = WritingEngine::new((0, 0));
+        e.trace_suspended = true;
+        for ch in "up".chars() {
+            e.on_char(ch);
+        }
+        // Trigger suspended: direction unchanged, buffer stays clear.
+        assert_eq!(e.direction, Direction::Right);
+        assert!(e.current_word.is_empty());
+    }
 
     #[test]
     fn default_direction_is_right() {
