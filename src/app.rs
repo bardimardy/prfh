@@ -182,6 +182,18 @@ impl App {
         }
     }
 
+    /// Ob das Inventar-Overlay sichtbar ist: automatisch sobald nicht leer, oder im
+    /// Cast-Modus (Auto-Pop, §8), oder manuell erzwungen. Buchstaben bewegen → kein
+    /// Buchstaben-Hotkey; manuelles Toggle liegt auf einer Nicht-Buchstaben-Taste.
+    pub fn inventory_open(&self) -> bool {
+        self.inv_visible || self.cast_mode || !self.inventory.is_empty()
+    }
+
+    /// Manuelles Ein-/Ausblenden des Inventar-Overlays (Nicht-Buchstaben-Taste).
+    pub fn toggle_inventory(&mut self) {
+        self.inv_visible = !self.inv_visible;
+    }
+
     /// Cast-Modus betreten/verlassen (Default-Taste `Tab`). Buffer wird geleert.
     pub fn toggle_cast(&mut self) {
         self.cast_mode = !self.cast_mode;
@@ -383,6 +395,35 @@ mod w3_tests {
         assert_eq!(app.pickup_anim.as_ref().unwrap().age, std::time::Duration::from_millis(100));
         app.advance_pickup_anim(std::time::Duration::from_millis(600)); // über PICKUP_ANIM_DUR
         assert!(app.pickup_anim.is_none(), "anim cleared after its duration");
+    }
+
+    #[test]
+    fn inventory_visibility_rules() {
+        let mut app = App::new_single();
+        assert!(!app.inventory_open(), "leer + kein cast + kein toggle → versteckt");
+        app.inventory.add(crate::game::powerup::Powerup {
+            id: 1,
+            name: "dash".into(),
+            effect_tag: crate::game::powerup::EffectTag::Test,
+        });
+        assert!(app.inventory_open(), "nicht leer → sichtbar");
+    }
+
+    #[test]
+    fn cast_mode_pops_inventory_even_when_empty() {
+        let mut app = App::new_single();
+        app.toggle_cast(); // Cast an
+        assert!(app.inventory_open(), "Cast-Modus poppt das Inventar");
+    }
+
+    #[test]
+    fn manual_toggle_forces_visibility_when_empty() {
+        let mut app = App::new_single();
+        assert!(!app.inventory_open());
+        app.toggle_inventory();
+        assert!(app.inventory_open(), "manuelles Toggle erzwingt Sichtbarkeit");
+        app.toggle_inventory();
+        assert!(!app.inventory_open());
     }
 }
 

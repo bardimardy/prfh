@@ -135,6 +135,7 @@ where
                 match key.code {
                     KeyCode::Esc => app.should_quit = true,
                     KeyCode::Tab => app.toggle_cast(),
+                    KeyCode::Char('`') => app.toggle_inventory(),
                     KeyCode::Char(c) => app.on_char(c),
                     KeyCode::Backspace => app.on_backspace(),
                     KeyCode::Enter => app.on_enter(),
