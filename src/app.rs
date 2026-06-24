@@ -7,6 +7,14 @@ use crate::hud::notify::{NotificationStack, NotifyKind};
 use crate::net::server::HostState;
 use std::time::Duration;
 
+/// Render-time-Pickup-Animation: Timer + Inventar-Slot der neuen Zeile (Design §3).
+pub struct PickupAnim {
+    pub age: Duration,
+    pub slot: usize,
+}
+
+pub const PICKUP_ANIM_DUR: Duration = Duration::from_millis(600);
+
 impl Default for App {
     fn default() -> Self {
         Self::new_single()
@@ -39,6 +47,10 @@ pub struct App {
     pub cast_wave: Option<Duration>,
     /// Monotone Animations-Uhr fürs render-time-Shimmer (vom Render getrieben).
     pub anim_clock: Duration,
+    /// Laufende Pickup-Animation (render-time); None = keine Anim aktiv.
+    pub pickup_anim: Option<PickupAnim>,
+    /// Inventar-Overlay sichtbar.
+    pub inv_visible: bool,
 }
 
 impl App {
@@ -59,6 +71,8 @@ impl App {
             cast_buffer: String::new(),
             cast_wave: None,
             anim_clock: Duration::ZERO,
+            pickup_anim: None,
+            inv_visible: false,
         }
     }
 
@@ -86,6 +100,8 @@ impl App {
             cast_buffer: String::new(),
             cast_wave: None,
             anim_clock: Duration::ZERO,
+            pickup_anim: None,
+            inv_visible: false,
         }
     }
 
@@ -291,6 +307,66 @@ impl App {
     }
 
     pub fn on_enter(&mut self) {}
+
+    /// Wendet ein host-autoritatives EffectEvent auf den lokalen Animations-State
+    /// an (Design §3.1). Pickup → render-time-Pickup-Anim auf der Slot-Zeile;
+    /// Activation → render-time-Cast-Welle.
+    pub fn apply_effect_event(&mut self, ev: crate::game::powerup::EffectEvent) {
+        use crate::game::powerup::EffectEvent;
+        match ev {
+            EffectEvent::Pickup { slot, .. } => {
+                self.pickup_anim = Some(PickupAnim { age: Duration::ZERO, slot });
+            }
+            EffectEvent::Activation { .. } => {
+                self.cast_wave = Some(Duration::ZERO);
+            }
+        }
+    }
+
+    /// Schreibt die Pickup-Animation fort und räumt sie nach `PICKUP_ANIM_DUR` ab.
+    /// Reine Funktion der Zeit (analog cast_wave) → unit-testbar.
+    pub fn advance_pickup_anim(&mut self, dt: Duration) {
+        if let Some(a) = self.pickup_anim.as_mut() {
+            a.age += dt;
+            if a.age >= PICKUP_ANIM_DUR {
+                self.pickup_anim = None;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod w3_tests {
+    use super::*;
+
+    #[test]
+    fn apply_pickup_event_starts_anim_on_slot() {
+        use crate::game::powerup::EffectEvent;
+        let mut app = App::new_single();
+        app.apply_effect_event(EffectEvent::Pickup { slot: 2, name: "warp".into() });
+        let a = app.pickup_anim.as_ref().expect("anim started");
+        assert_eq!(a.slot, 2);
+        assert_eq!(a.age, std::time::Duration::ZERO);
+    }
+
+    #[test]
+    fn apply_activation_event_fires_cast_wave() {
+        use crate::game::powerup::{EffectEvent, EffectTag};
+        let mut app = App::new_single();
+        app.apply_effect_event(EffectEvent::Activation { tag: EffectTag::Test, name: "dash".into() });
+        assert!(app.cast_wave.is_some());
+    }
+
+    #[test]
+    fn pickup_anim_advances_then_clears_after_duration() {
+        use crate::game::powerup::EffectEvent;
+        let mut app = App::new_single();
+        app.apply_effect_event(EffectEvent::Pickup { slot: 0, name: "dash".into() });
+        app.advance_pickup_anim(std::time::Duration::from_millis(100));
+        assert_eq!(app.pickup_anim.as_ref().unwrap().age, std::time::Duration::from_millis(100));
+        app.advance_pickup_anim(std::time::Duration::from_millis(600)); // über PICKUP_ANIM_DUR
+        assert!(app.pickup_anim.is_none(), "anim cleared after its duration");
+    }
 }
 
 #[cfg(test)]

@@ -38,6 +38,15 @@ pub struct Powerup {
 /// der Cursor stehen darf und trotzdem aufs Wort gesnappt wird.
 pub const ENTRY_SNAP_RADIUS: i32 = 1;
 
+/// Beobachtbares, host-autoritatives Spiel-Event, das eine Animation auslöst.
+/// In #44 lokal erzeugt+angewendet; der MP-Broadcast (Host serialisiert → ServerMsg)
+/// hängt sich später additiv hier an (Seam jetzt, Draht später — Design §3.1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectEvent {
+    Pickup { slot: usize, name: String },
+    Activation { tag: EffectTag, name: String },
+}
+
 /// Ein noch nicht eingesammeltes Powerup-Wort auf der Map. Das Layout
 /// (Origin/Achse/Reversed → Tile-Positionen + Keystroke→Tile-Mapping) ist der
 /// W2-Job (Welt-Spec §4, Powerup-Spec §5). Im Substrat (`arena.rs`) ist es nur
