@@ -691,6 +691,109 @@ mod tests {
     }
 
     #[test]
+    fn trace_feedback_colors_forward_word() {
+        // Nicht-reversed "dash": logical == physischer Index i. progress=2 →
+        // i0,i1 getraced (HIGHLIGHT_BG), i2 next (ACCENT), i3 shimmer (weder/noch).
+        use crate::game::arena::EntityKind;
+        use crate::game::powerup::{Axis, PowerupWord};
+        use crate::game::writing::TraceState;
+        let mut app = App::new();
+        app.arena_mut().unwrap().spawn(
+            (5, -2),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "dash".into(),
+                origin: (5, -2),
+                axis: Axis::Horizontal,
+                reversed: false,
+            }),
+        );
+        let id = app.arena().entities[0].id;
+        app.trace.state = TraceState::Tracing { id, progress: 2 };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        let buf = terminal.backend().buffer();
+
+        // Screen-Transform: (5,-2) - cursor(0,0) + center(40,12) = (45,10);
+        // Tiles liegen aufsteigend ab origin → 45,46,47,48 für i=0..3.
+        assert_eq!(
+            buf.cell((45, 10)).unwrap().bg,
+            theme::HIGHLIGHT_BG,
+            "i0 (logical0 < progress2) sollte getraced (HIGHLIGHT_BG) sein"
+        );
+        assert_eq!(
+            buf.cell((46, 10)).unwrap().bg,
+            theme::HIGHLIGHT_BG,
+            "i1 (logical1 < progress2) sollte getraced (HIGHLIGHT_BG) sein"
+        );
+        assert_eq!(
+            buf.cell((47, 10)).unwrap().bg,
+            theme::ACCENT,
+            "i2 (logical2 == progress2) sollte Next-Tile (ACCENT) sein"
+        );
+        let shimmer_bg = buf.cell((48, 10)).unwrap().bg;
+        assert_ne!(
+            shimmer_bg,
+            theme::HIGHLIGHT_BG,
+            "i3 (logical3 > progress2) sollte NICHT getraced sein"
+        );
+        assert_ne!(
+            shimmer_bg,
+            theme::ACCENT,
+            "i3 (logical3 > progress2) sollte NICHT Next-Tile sein"
+        );
+    }
+
+    #[test]
+    fn trace_feedback_colors_reversed_word() {
+        // Reversed "dash": physisches Tile i zeigt letters[n-1-i], logical = n-1-i.
+        // progress=2 → i0 logical3 shimmer, i1 logical2 next (ACCENT),
+        // i2 logical1 getraced (HIGHLIGHT_BG). Das ist die riskante Index-Math.
+        use crate::game::arena::EntityKind;
+        use crate::game::powerup::{Axis, PowerupWord};
+        use crate::game::writing::TraceState;
+        let mut app = App::new();
+        app.arena_mut().unwrap().spawn(
+            (5, -2),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "dash".into(),
+                origin: (5, -2),
+                axis: Axis::Horizontal,
+                reversed: true,
+            }),
+        );
+        let id = app.arena().entities[0].id;
+        app.trace.state = TraceState::Tracing { id, progress: 2 };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        let buf = terminal.backend().buffer();
+
+        // Screen-Transform wie oben: physische Tiles 45,46,47,48 für i=0..3.
+        let shimmer_bg = buf.cell((45, 10)).unwrap().bg;
+        assert_ne!(
+            shimmer_bg,
+            theme::HIGHLIGHT_BG,
+            "i0 (logical3 > progress2) sollte NICHT getraced sein"
+        );
+        assert_ne!(
+            shimmer_bg,
+            theme::ACCENT,
+            "i0 (logical3 > progress2) sollte NICHT Next-Tile sein"
+        );
+        assert_eq!(
+            buf.cell((46, 10)).unwrap().bg,
+            theme::ACCENT,
+            "i1 (logical2 == progress2) sollte Next-Tile (ACCENT) sein"
+        );
+        assert_eq!(
+            buf.cell((47, 10)).unwrap().bg,
+            theme::HIGHLIGHT_BG,
+            "i2 (logical1 < progress2) sollte getraced (HIGHLIGHT_BG) sein"
+        );
+    }
+
+    #[test]
     fn trace_feedback_renders_many_frames_without_panic() {
         // Aktiver Trace-State (getractes Wort + Next-Tile-Highlight + unterdrückter
         // Cursor) über viele Frames: reine render-time-Math, darf nicht paniken.
