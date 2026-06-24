@@ -43,6 +43,30 @@ IST das Gate.
   `std::time::Duration` → tachyonfx-Duration via `.into()`. **Key-Bound:**
   `K: Clone + Debug + Ord`.
 
+### Radiale Bewegung gibt es — über Patterns, NICHT über `expand` (W2-Befund)
+
+`expand`/`stretch` sind **rechteckige** Reveals (zwei gegenläufige Stretch-Shader) —
+nie ein Ring. Für eine echte „Welle nach außen" hat tachyonfx 0.25
+`tachyonfx::pattern::RadialPattern` (Euklid-Distanz vom Zentrum, `sqrt(dx² + 4·dy²)`
+mit 2:1-Zellaspekt-Kompensation, sodass der Ring rund wirkt) — angehängt an einen
+pattern-fähigen Effekt via `effect.with_pattern(RadialPattern::center().with_transition_width(w))`.
+Pattern-fähig: `dissolve/coalesce`, `hsl_shift(_fg)`, `evolve*`, `saturate`,
+`lighten/darken`, `fade*` (NICHT `expand`/`stretch`). Auch da: `SpiralPattern` (mit
+`.with_arms(u16)`), `fx::explode(force, rng, timer)` (Zellen nach außen streuen).
+
+### ⚠️ `evolve_into`/`evolve_from` blanken/füllen — ungeeignet als transparentes Overlay (W2-Befund)
+
+`evolve_into` setzt jede Zelle, die der Pattern-Ring **noch nicht erreicht hat**
+(`cell_alpha == 0`), auf `get_symbol(0.0) == ' '` — es **blankt den Hintergrund**,
+statt ihn durchscheinen zu lassen (erst bei `alpha == 1` wird der echte Inhalt
+freigegeben). `evolve_from` füllt umgekehrt das Innere mit `'●'`. Über dem
+**scrollenden Spielfeld** ist beides falsch: das Feld verschwindet. Für einen
+**transparenten** expandierenden Ring (z. B. der Cast-Ring) → **render-time-Math**
+(nur die Ring-Bande zeichnen, `if off > BAND { continue }`, nur `set_char`+`set_fg`,
+nie `bg`/blank), nicht `evolve` (siehe `draw_cast_ring` in `src/render/mod.rs`,
+W2 #43). Das ist dieselbe Regel wie Learning #37 unten — gilt auch für diskrete
+Ring-Bursts, sobald sie das Feld durchscheinen lassen sollen.
+
 ## Render-Hook & Kollisions-Schnitt (§12)
 
 - Der Hook lebt in `src/render/mod.rs`:
