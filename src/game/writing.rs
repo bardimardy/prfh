@@ -402,10 +402,11 @@ impl Trace {
         match self.state {
             TraceState::Idle => {
                 for (id, w) in words {
-                    if pos == w.entry_tile()
-                        && dir.delta() == w.run_direction()
-                        && w.expected_char(0) == Some(ch)
-                    {
+                    // 1-Buchstaben-Wörter haben keine Lauf-Achse (`run_direction`
+                    // ist `(0,0)`, das kein `Direction::delta` je trifft) → die
+                    // Richtungs-Bedingung entfällt; Position + Zeichen genügen.
+                    let dir_ok = w.len() <= 1 || dir.delta() == w.run_direction();
+                    if pos == w.entry_tile() && dir_ok && w.expected_char(0) == Some(ch) {
                         if w.len() <= 1 {
                             return TraceStep::Completed { id: *id };
                         }
@@ -551,6 +552,26 @@ mod tests {
         assert_eq!(
             t.observe((3, 0), 'h', Direction::Left, &words),
             TraceStep::Completed { id: 7 }
+        );
+    }
+
+    #[test]
+    fn trace_completes_single_char_word_any_direction() {
+        // 1-Buchstaben-Wort: keine Lauf-Achse → Richtung egal, Position + Zeichen
+        // genügen. Schließt den vorher toten `len <= 1`-Pfad ab.
+        let w = pw("x", (2, 2), Axis::Horizontal, false);
+        let words = [(9u32, &w)];
+        let mut t = Trace::new();
+        assert_eq!(
+            t.observe((2, 2), 'x', Direction::Up, &words),
+            TraceStep::Completed { id: 9 }
+        );
+        assert!(!t.is_tracing());
+        // Falsche Position armt nicht.
+        let mut t2 = Trace::new();
+        assert_eq!(
+            t2.observe((0, 0), 'x', Direction::Up, &words),
+            TraceStep::None
         );
     }
 
