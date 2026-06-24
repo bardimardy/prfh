@@ -994,7 +994,20 @@ fn layout_powerup(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
         } else {
             i < state.traced
         };
-        let style = if traced {
+        // Nächstes erwartetes Tile = wo der nächste Buchstabe hin muss
+        // (in Tipp-Reihenfolge das Tile direkt hinter dem getracten Block).
+        let is_next = if reversed {
+            state.traced < n && i == n - 1 - state.traced
+        } else {
+            state.traced < n && i == state.traced
+        };
+        let next_style = Style::default()
+            .fg(theme::HIGHLIGHT_FG)
+            .bg(theme::ACCENT)
+            .add_modifier(Modifier::BOLD);
+        let style = if is_next {
+            next_style
+        } else if traced {
             traced_style
         } else {
             state.word_style.style_at(state.frame, i, n)
