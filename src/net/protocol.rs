@@ -128,7 +128,10 @@ mod tests {
                 id: 3,
                 pos: (12, -4),
                 kind: EntityKind::PowerupWord(PowerupWord {
-                    word: "rebase".into(),
+                    name: "rebase".into(),
+                    origin: (12, -4),
+                    axis: crate::game::powerup::Axis::Horizontal,
+                    reversed: false,
                 }),
             },
         };

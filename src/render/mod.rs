@@ -1,7 +1,7 @@
 use crate::app::App;
 use crate::game::arena::{Arena, EntityKind};
 use crate::game::world::WorldView;
-use crate::game::writing::Direction;
+use crate::game::writing::{Direction, TraceState};
 use crate::hud::{anchor_rect, Anchor};
 use crate::theme;
 use ratatui::{
@@ -32,14 +32,41 @@ pub fn process_effects<K: Clone + std::fmt::Debug + Ord>(
 /// schweben als Overlays an Ankern darüber. `elapsed` treibt die zeitbasierten
 /// Notifications (deshalb `&mut App`).
 pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
+    // Animations-Uhren render-time fortschreiben (shimmer-Phase, Cast-Welle).
+    app.anim_clock += elapsed;
+    if let Some(age) = app.cast_wave.as_mut() {
+        *age += elapsed;
+        if age.as_secs_f32() > RING_DUR {
+            app.cast_wave = None;
+        }
+    }
+
     let area = f.area();
     let world = app.world_view();
+    let clock = app.anim_clock;
+    let cast_wave = app.cast_wave;
+    let cast_mode = app.cast_mode;
 
-    draw_world(f, area, &world, app.arena());
+    let trace: Option<(u32, usize)> = match app.trace.state {
+        TraceState::Tracing { id, progress } => Some((id, progress)),
+        TraceState::Idle => None,
+    };
+
+    draw_world(f, area, &world, app.arena(), clock, trace);
     draw_hud(f, area, app, &world);
 
     // Notifications oben-mitte, über der Welt (mutabel: halten ihre Effekte).
     app.notifications.render(f.buffer_mut(), area, elapsed);
+
+    // Cast-Buffer-Indikator + transparenter Rainbow-Ring (render-time, über der
+    // Welt; der Ring berührt nur seine Bande → Spielfeld bleibt sichtbar).
+    if cast_mode {
+        draw_cast_buffer(f, area, app);
+    }
+    if let Some(age) = cast_wave {
+        let center = ((area.width / 2) as i32, (area.height / 2) as i32);
+        draw_cast_ring(f.buffer_mut(), center, age, area);
+    }
 
     let self_dead = world.players.iter().any(|p| p.is_self && p.is_dead);
     if self_dead {
@@ -195,7 +222,14 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
 
 /// Frameless Welt: füllt `area` komplett, cursor-zentriert. Kein Rahmen, kein
 /// Titel — die HUD-Overlays liegen darüber.
-fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena) {
+fn draw_world(
+    f: &mut Frame,
+    area: Rect,
+    world: &WorldView,
+    arena: &Arena,
+    clock: Duration,
+    trace: Option<(u32, usize)>,
+) {
     let w = area.width as i32;
     let h = area.height as i32;
     let center = (w / 2, h / 2);
@@ -204,21 +238,7 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena) {
     let cursor = self_player.map(|p| p.cursor).unwrap_or((0, 0));
 
     let mut grid: Vec<Vec<Option<(char, Style)>>> = vec![vec![None; w as usize]; h as usize];
-
-    // Entitäten zuerst zeichnen (Trails liegen optisch darüber). Dieselbe
-    // cursor-zentrierte Transform wie die Tiles. Dezentes Ghost-Styling
-    // (genaues Look&Feel: W3).
-    for e in &arena.entities {
-        let rx = e.pos.0 - cursor.0 + center.0;
-        let ry = e.pos.1 - cursor.1 + center.1;
-        if rx < 0 || ry < 0 || rx >= w || ry >= h {
-            continue;
-        }
-        let ch = match &e.kind {
-            EntityKind::PowerupWord(pw) => pw.word.chars().next().unwrap_or('◆'),
-        };
-        grid[ry as usize][rx as usize] = Some((ch, Style::default().fg(theme::TEXT_DIM)));
-    }
+    let t = clock.as_secs_f32();
 
     // Alle Tiles aller Spieler nach tick sortieren, damit das zuletzt
     // geschriebene Tile an jeder Zelle gewinnt (fixt Host-vs-Client-Reihenfolge).
@@ -260,6 +280,52 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena) {
         grid[ry as usize][rx as usize] = Some((tile.ch, style));
     }
 
+    // Powerup-Wörter NACH den Trails zeichnen → Top-Layer: der eigene Trail
+    // überdeckt das Wort nicht mehr (Pickup-Gefühl B). Cursor-zentrierte
+    // Transform wie die Tiles; jedes Tile an seiner Position, Shimmer-Idle-Look.
+    for e in &arena.entities {
+        match &e.kind {
+            EntityKind::PowerupWord(pw) => {
+                let letters: Vec<char> = pw.name.chars().collect();
+                // Aktiver Trace auf GENAU diesem Wort? Dann Fortschritt + Next-Tile.
+                let active = trace.filter(|(tid, _)| *tid == e.id).map(|(_, p)| p);
+                let next_style = Style::default()
+                    .fg(theme::HIGHLIGHT_FG)
+                    .bg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD);
+                let traced_style = Style::default()
+                    .fg(theme::HIGHLIGHT_FG)
+                    .bg(theme::HIGHLIGHT_BG)
+                    .add_modifier(Modifier::BOLD);
+                for (i, tile) in pw.tiles().iter().enumerate() {
+                    let rx = tile.0 - cursor.0 + center.0;
+                    let ry = tile.1 - cursor.1 + center.1;
+                    if rx < 0 || ry < 0 || rx >= w || ry >= h {
+                        continue;
+                    }
+                    let ch = if pw.reversed {
+                        letters[letters.len() - 1 - i]
+                    } else {
+                        letters[i]
+                    };
+                    // Keystroke k landet auf keystroke_tile(k); bei reversed ist
+                    // das Tile-Index n-1-k. „logischer Fortschritt" dieses Tiles:
+                    let logical = if pw.reversed {
+                        letters.len() - 1 - i
+                    } else {
+                        i
+                    };
+                    let style = match active {
+                        Some(p) if logical < p => traced_style,
+                        Some(p) if logical == p => next_style,
+                        _ => shimmer_style(t, i),
+                    };
+                    grid[ry as usize][rx as usize] = Some((ch, style));
+                }
+            }
+        }
+    }
+
     // Cursor-Marker: Block-Stil in Akzentfarbe (eigener Spieler), Mitspieler in
     // ihrer Farbe.
     for player in &world.players {
@@ -285,7 +351,10 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena) {
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD)
         };
-        if player.is_self || !player.is_dead {
+        // Eigener Cursor-Pfeil wird während eines aktiven Trace unterdrückt —
+        // die Next-Tile-Hervorhebung (oben) steht an seiner Stelle (Pickup C).
+        let suppress_self = player.is_self && trace.is_some();
+        if (player.is_self || !player.is_dead) && !suppress_self {
             grid[ry as usize][rx as usize] = Some((arrow_ch, style));
         }
     }
@@ -305,6 +374,121 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena) {
         })
         .collect();
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// Dauer der Cast-Ring-Animation (Sekunden) — snappy/dynamisch.
+const RING_DUR: f32 = 0.38;
+
+/// shimmer Idle-Style eines Powerup-Tiles: gray→white-Band, das übers Wort
+/// wandert. Reine Funktion aus `(t, index)` → scroll-immun (Skill `effects`,
+/// Learning #37): das Wort scrollt cursor-zentriert mit, ein tachyonfx-Zell-
+/// Effekt würde über logisch andere Zeichen schmieren.
+fn shimmer_style(t: f32, i: usize) -> Style {
+    let phase = t * 7.0 - i as f32 * 0.95;
+    let l = 0.5 + 0.5 * phase.sin();
+    let v = (0x55_u16 as f32 + (0xE6 - 0x55) as f32 * l).round() as u8;
+    Style::default()
+        .fg(Color::Rgb(v, v, (v as u16 + 7).min(255) as u8))
+        .add_modifier(Modifier::BOLD)
+}
+
+/// HSL→RGB für den Rainbow-Cast-Ring (helle, pastellige Farben).
+fn hsl(h: f32, s: f32, l: f32) -> Color {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h.rem_euclid(360.0) / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    let to = |v: f32| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    Color::Rgb(to(r), to(g), to(b))
+}
+
+/// Transparenter Rainbow-Glyph-Ring (gewählte Cast-Signatur): berührt NUR die
+/// expandierende Ring-Bande — alle anderen Zellen bleiben unberührt, das
+/// Spielfeld bleibt sichtbar. Render-time-Math (`sqrt(dx² + 4·dy²)`, 2:1-
+/// Zellaspekt) → smear-frei über scrollendem Inhalt. Heller Pastell-Regenbogen
+/// nach Winkel, dünne Bande + Stipple → luftig. Bewusst KEIN tachyonfx-Effekt
+/// (`evolve_into` blankt nicht-erreichte Zellen auf ' ' → verdeckt das Feld).
+fn draw_cast_ring(buf: &mut Buffer, center: (i32, i32), age: Duration, area: Rect) {
+    const MAXR: f32 = 17.0;
+    const BAND: f32 = 1.5;
+    let (cx, cy) = center;
+    let p = (age.as_secs_f32() / RING_DUR).clamp(0.0, 1.0);
+    let r = (1.0 - (1.0 - p) * (1.0 - p)) * MAXR; // QuadOut
+    let life = 1.0 - p;
+    for y in area.top() as i32..area.bottom() as i32 {
+        for x in area.left() as i32..area.right() as i32 {
+            let dxf = (x - cx) as f32;
+            let dy = (y - cy) as f32 * 2.0;
+            let d = (dxf * dxf + dy * dy).sqrt();
+            let off = (d - r).abs();
+            if off > BAND {
+                continue;
+            }
+            let intensity = (1.0 - off / BAND) * life;
+            if intensity < 0.12 {
+                continue;
+            }
+            let hsh = (x as u64)
+                .wrapping_mul(2_654_435_761)
+                .wrapping_add((y as u64).wrapping_mul(40_503));
+            if hsh % 5 < 2 {
+                continue; // ~40 % Stipple → weniger dense
+            }
+            let hue = dy.atan2(dxf).to_degrees() + 360.0 + p * 50.0;
+            let col = hsl(hue, 0.55, 0.74 + 0.12 * intensity);
+            let ch = if intensity > 0.66 { '•' } else { '·' };
+            if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
+                cell.set_char(ch).set_fg(col);
+            }
+        }
+    }
+}
+
+/// Cast-Buffer-Indikator (Powerup-Spec §7): gematchter Prefix im Pink-Kasten,
+/// Rest gedämpft. Volles Inventar-Overlay-UI bleibt W3.
+fn draw_cast_buffer(f: &mut Frame, area: Rect, app: &App) {
+    let buf = &app.cast_buffer;
+    // Längster Prefix-Match bestimmt den hervorgehobenen Rest (Shadow-Suffix).
+    let suffix = app
+        .inventory
+        .prefix_matches(buf)
+        .first()
+        .map(|p| p.name[buf.len().min(p.name.len())..].to_string())
+        .unwrap_or_default();
+    let line = Line::from(vec![
+        Span::styled(
+            " cast ▸ ",
+            Style::default()
+                .fg(theme::ACCENT)
+                .bg(theme::PANEL_BG)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            buf.clone(),
+            Style::default()
+                .fg(theme::HIGHLIGHT_FG)
+                .bg(theme::HIGHLIGHT_BG)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            suffix,
+            Style::default().fg(theme::TEXT_DIM).bg(theme::PANEL_BG),
+        ),
+        Span::styled(" ", Style::default().bg(theme::PANEL_BG)),
+    ]);
+    let rect = anchor_rect(area, Anchor::BottomCenter, 28, 1);
+    f.render_widget(
+        Paragraph::new(line).style(Style::default().bg(theme::PANEL_BG)),
+        rect,
+    );
 }
 
 #[cfg(test)]
@@ -327,13 +511,20 @@ mod tests {
 
     #[test]
     fn draw_world_renders_arena_entity_at_expected_cell() {
-        use crate::game::arena::{EntityKind, PowerupWord};
+        use crate::game::arena::EntityKind;
+        use crate::game::powerup::{Axis, PowerupWord};
         let mut app = App::new();
         // Offset vom Cursor (0,0), damit der Cursor-Marker die Entität nicht
         // überdeckt. 'z' kommt im HUD nicht vor → eindeutiger Treffer.
+        // origin (5,-2), horizontal, not reversed → p_0=(5,-2) zeigt 'z'.
         app.arena_mut().unwrap().spawn(
             (5, -2),
-            EntityKind::PowerupWord(PowerupWord { word: "zoom".into() }),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "zoom".into(),
+                origin: (5, -2),
+                axis: Axis::Horizontal,
+                reversed: false,
+            }),
         );
         // Screen-Transform: (5,-2) - cursor(0,0) + center(40,12) = (45,10).
         let backend = TestBackend::new(80, 24);
@@ -415,6 +606,34 @@ mod tests {
     }
 
     #[test]
+    fn cast_flow_renders_many_frames_without_panic() {
+        // Cast-Welle + Cast-Buffer + shimmer-Wort über viele Frames: darf nicht
+        // paniken (render-time-Math, kein tachyonfx).
+        use crate::game::arena::EntityKind;
+        use crate::game::powerup::{Axis, PowerupWord};
+        let mut app = App::new();
+        app.arena_mut().unwrap().spawn(
+            (3, 0),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "dash".into(),
+                origin: (3, 0),
+                axis: Axis::Horizontal,
+                reversed: false,
+            }),
+        );
+        app.cast_mode = true;
+        app.cast_buffer = "da".into();
+        app.cast_wave = Some(Duration::ZERO);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        for _ in 0..40 {
+            terminal
+                .draw(|f| draw(f, &mut app, Duration::from_millis(50)))
+                .unwrap();
+        }
+    }
+
+    #[test]
     fn process_effects_hook_drives_manager_without_panic() {
         use crate::effects;
         use ratatui::buffer::Buffer;
@@ -428,6 +647,178 @@ mod tests {
         let area = buf.area;
         for _ in 0..40 {
             process_effects(&mut mgr, Duration::from_millis(50), &mut buf, area);
+        }
+    }
+
+    #[test]
+    fn powerup_word_not_hidden_by_trail_tile() {
+        use crate::app::Mode;
+        use crate::game::arena::EntityKind;
+        use crate::game::powerup::{Axis, PowerupWord};
+        use crate::game::writing::{Tile, TILE_MAX_BRIGHTNESS};
+        let mut app = App::new();
+        // Wort offset vom Cursor (Cursor-Marker soll nicht stören): origin (5,-2).
+        app.arena_mut().unwrap().spawn(
+            (5, -2),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "zoom".into(),
+                origin: (5, -2),
+                axis: Axis::Horizontal,
+                reversed: false,
+            }),
+        );
+        // Ein Trail-Tile genau AUF das erste Wort-Tile (5,-2) legen.
+        if let Mode::Single(e, _) = &mut app.mode {
+            e.trail.push(Tile {
+                pos: (5, -2),
+                ch: 'Q',
+                tick: 99,
+                glow: 0,
+                brightness: TILE_MAX_BRIGHTNESS,
+                written_pace: 0.0,
+            });
+        }
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        let buf = terminal.backend().buffer();
+        // Screen-Transform: (5,-2) - (0,0) + (40,12) = (45,10).
+        assert_eq!(
+            buf.cell((45, 10)).unwrap().symbol(),
+            "z",
+            "Powerup-Wort muss über dem Trail liegen (Top-Layer)"
+        );
+    }
+
+    #[test]
+    fn trace_feedback_colors_forward_word() {
+        // Nicht-reversed "dash": logical == physischer Index i. progress=2 →
+        // i0,i1 getraced (HIGHLIGHT_BG), i2 next (ACCENT), i3 shimmer (weder/noch).
+        use crate::game::arena::EntityKind;
+        use crate::game::powerup::{Axis, PowerupWord};
+        use crate::game::writing::TraceState;
+        let mut app = App::new();
+        app.arena_mut().unwrap().spawn(
+            (5, -2),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "dash".into(),
+                origin: (5, -2),
+                axis: Axis::Horizontal,
+                reversed: false,
+            }),
+        );
+        let id = app.arena().entities[0].id;
+        app.trace.state = TraceState::Tracing { id, progress: 2 };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        let buf = terminal.backend().buffer();
+
+        // Screen-Transform: (5,-2) - cursor(0,0) + center(40,12) = (45,10);
+        // Tiles liegen aufsteigend ab origin → 45,46,47,48 für i=0..3.
+        assert_eq!(
+            buf.cell((45, 10)).unwrap().bg,
+            theme::HIGHLIGHT_BG,
+            "i0 (logical0 < progress2) sollte getraced (HIGHLIGHT_BG) sein"
+        );
+        assert_eq!(
+            buf.cell((46, 10)).unwrap().bg,
+            theme::HIGHLIGHT_BG,
+            "i1 (logical1 < progress2) sollte getraced (HIGHLIGHT_BG) sein"
+        );
+        assert_eq!(
+            buf.cell((47, 10)).unwrap().bg,
+            theme::ACCENT,
+            "i2 (logical2 == progress2) sollte Next-Tile (ACCENT) sein"
+        );
+        let shimmer_bg = buf.cell((48, 10)).unwrap().bg;
+        assert_ne!(
+            shimmer_bg,
+            theme::HIGHLIGHT_BG,
+            "i3 (logical3 > progress2) sollte NICHT getraced sein"
+        );
+        assert_ne!(
+            shimmer_bg,
+            theme::ACCENT,
+            "i3 (logical3 > progress2) sollte NICHT Next-Tile sein"
+        );
+    }
+
+    #[test]
+    fn trace_feedback_colors_reversed_word() {
+        // Reversed "dash": physisches Tile i zeigt letters[n-1-i], logical = n-1-i.
+        // progress=2 → i0 logical3 shimmer, i1 logical2 next (ACCENT),
+        // i2 logical1 getraced (HIGHLIGHT_BG). Das ist die riskante Index-Math.
+        use crate::game::arena::EntityKind;
+        use crate::game::powerup::{Axis, PowerupWord};
+        use crate::game::writing::TraceState;
+        let mut app = App::new();
+        app.arena_mut().unwrap().spawn(
+            (5, -2),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "dash".into(),
+                origin: (5, -2),
+                axis: Axis::Horizontal,
+                reversed: true,
+            }),
+        );
+        let id = app.arena().entities[0].id;
+        app.trace.state = TraceState::Tracing { id, progress: 2 };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        let buf = terminal.backend().buffer();
+
+        // Screen-Transform wie oben: physische Tiles 45,46,47,48 für i=0..3.
+        let shimmer_bg = buf.cell((45, 10)).unwrap().bg;
+        assert_ne!(
+            shimmer_bg,
+            theme::HIGHLIGHT_BG,
+            "i0 (logical3 > progress2) sollte NICHT getraced sein"
+        );
+        assert_ne!(
+            shimmer_bg,
+            theme::ACCENT,
+            "i0 (logical3 > progress2) sollte NICHT Next-Tile sein"
+        );
+        assert_eq!(
+            buf.cell((46, 10)).unwrap().bg,
+            theme::ACCENT,
+            "i1 (logical2 == progress2) sollte Next-Tile (ACCENT) sein"
+        );
+        assert_eq!(
+            buf.cell((47, 10)).unwrap().bg,
+            theme::HIGHLIGHT_BG,
+            "i2 (logical1 < progress2) sollte getraced (HIGHLIGHT_BG) sein"
+        );
+    }
+
+    #[test]
+    fn trace_feedback_renders_many_frames_without_panic() {
+        // Aktiver Trace-State (getractes Wort + Next-Tile-Highlight + unterdrückter
+        // Cursor) über viele Frames: reine render-time-Math, darf nicht paniken.
+        use crate::game::arena::EntityKind;
+        use crate::game::powerup::{Axis, PowerupWord};
+        use crate::game::writing::TraceState;
+        let mut app = App::new();
+        app.arena_mut().unwrap().spawn(
+            (3, 0),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "dash".into(),
+                origin: (3, 0),
+                axis: Axis::Horizontal,
+                reversed: false,
+            }),
+        );
+        // Trace mitten im Wort: id muss zur gespawnten Entität passen.
+        let id = app.arena().entities[0].id;
+        app.trace.state = TraceState::Tracing { id, progress: 2 };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        for _ in 0..40 {
+            terminal
+                .draw(|f| draw(f, &mut app, Duration::from_millis(50)))
+                .unwrap();
         }
     }
 }

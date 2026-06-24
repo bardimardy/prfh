@@ -1,8 +1,11 @@
-use crate::game::arena::Arena;
+use crate::game::arena::{Arena, EntityKind};
+use crate::game::inventory::Inventory;
+use crate::game::powerup::{EffectTag, Powerup, PowerupWord, ENTRY_SNAP_RADIUS};
 use crate::game::world::{PlayerId, PlayerView, WorldView};
-use crate::game::writing::{StepResult, WritingEngine};
+use crate::game::writing::{StepResult, Trace, TraceStep, WritingEngine};
 use crate::hud::notify::{NotificationStack, NotifyKind};
 use crate::net::server::HostState;
+use std::time::Duration;
 
 impl Default for App {
     fn default() -> Self {
@@ -25,6 +28,17 @@ pub struct App {
     pub notifications: NotificationStack,
     pub debug: bool,
     pub debug_lines: Vec<String>,
+    /// Inventar der eingesammelten Powerups (Single-Flow; MP getrennt/W3).
+    pub inventory: Inventory,
+    /// Beobachtende Pickup-Trace-FSM.
+    pub trace: Trace,
+    /// Cast-Modus aktiv (Tab-Toggle): Zeichen füllen den Buffer statt zu schreiben.
+    pub cast_mode: bool,
+    pub cast_buffer: String,
+    /// Alter der laufenden Cast-Welle (render-time-Ring); None = keine Welle.
+    pub cast_wave: Option<Duration>,
+    /// Monotone Animations-Uhr fürs render-time-Shimmer (vom Render getrieben).
+    pub anim_clock: Duration,
 }
 
 impl App {
@@ -40,13 +54,33 @@ impl App {
     }
 
     pub fn new_single() -> Self {
+        let mut arena = Arena::new();
+        // Test-Powerup nur unter PRFH_DEBUG: validiert den ganzen Flow
+        // Pickup→Inventar→Cast→Dispatch. Entfernen via Follow-up-Issue.
+        if std::env::var("PRFH_DEBUG").is_ok() {
+            arena.spawn(
+                (3, 0),
+                EntityKind::PowerupWord(PowerupWord {
+                    name: "dash".into(),
+                    origin: (3, 0),
+                    axis: crate::game::powerup::Axis::Horizontal,
+                    reversed: false,
+                }),
+            );
+        }
         Self {
             should_quit: false,
-            mode: Mode::Single(WritingEngine::new((0, 0)), Arena::new()),
+            mode: Mode::Single(WritingEngine::new((0, 0)), arena),
             last_event: String::from("type to write yourself a path"),
             notifications: NotificationStack::new(),
             debug: false,
             debug_lines: Vec::new(),
+            inventory: Inventory::new(),
+            trace: Trace::new(),
+            cast_mode: false,
+            cast_buffer: String::new(),
+            cast_wave: None,
+            anim_clock: Duration::ZERO,
         }
     }
 
@@ -127,29 +161,119 @@ impl App {
         }
     }
 
+    /// Cast-Modus betreten/verlassen (Default-Taste `Tab`). Buffer wird geleert.
+    pub fn toggle_cast(&mut self) {
+        self.cast_mode = !self.cast_mode;
+        self.cast_buffer.clear();
+    }
+
+    /// Zeichen im Cast-Modus: füllt den Buffer (schreibt KEIN Tile, bewegt den
+    /// Cursor nicht). Bei exaktem Inventar-Namen → Dispatch + Modus verlassen.
+    fn on_cast_char(&mut self, c: char) {
+        self.cast_buffer.push(c);
+        if let Some(p) = self.inventory.get_exact(&self.cast_buffer).cloned() {
+            self.dispatch_cast(p.effect_tag, &p.name);
+            self.cast_mode = false;
+            self.cast_buffer.clear();
+        }
+    }
+
+    /// Aktivierungs-Dispatch-Hook (Powerup-Spec §7): matcht `effect_tag`. Vorerst
+    /// Log + Banner + render-time-Cast-Welle (echte Effekte wie Dash: später).
+    fn dispatch_cast(&mut self, tag: EffectTag, name: &str) {
+        match tag {
+            EffectTag::Test => {
+                self.notifications
+                    .push(NotifyKind::Event, "⚡  CAST", name.to_string());
+                self.cast_wave = Some(Duration::ZERO);
+                self.debug_log(format!("cast dispatch: {name} ({tag:?})"));
+            }
+        }
+    }
+
     /// Single-player local input. (Host/Client routing added in Task 9.)
     pub fn on_char(&mut self, c: char) {
         if c == ' ' {
             return;
         }
-        if let Mode::Single(e, _) = &mut self.mode {
+        if self.cast_mode {
+            self.on_cast_char(c);
+            return;
+        }
+        if let Mode::Single(e, arena) = &mut self.mode {
+            let dir = e.direction;
+
+            // Toleranter Snap-on-Arm (Pickup-Gefühl A): steht der Cursor ≤1 Tile
+            // neben einem Eintritts-Tile, fährt in Laufrichtung an und passt der
+            // erste Buchstabe, rastet er aufs Eintritts-Tile ein — BEVOR on_char
+            // schreibt. Nur im Idle (laufender Trace soll nicht weggerissen
+            // werden). Bei exaktem Treffer ist es ein no-op. Die Trace-FSM bleibt
+            // Beobachter und sieht danach ein exaktes Eintritts-Tile.
+            if !self.trace.is_tracing() {
+                let dd = dir.delta();
+                if let Some(target) = arena.entities.iter().find_map(|ent| match &ent.kind {
+                    EntityKind::PowerupWord(w) => w.entry_snap(e.cursor, dd, c, ENTRY_SNAP_RADIUS),
+                }) {
+                    e.cursor = target;
+                }
+            }
+
+            e.trace_suspended = self.trace.is_tracing();
             let result = e.on_char(c);
+
+            // Trace füttern: nur wenn ein Tile geschrieben wurde. Den Pickup
+            // (id+name) herausziehen, BEVOR die Arena mutiert wird (der `words`-
+            // Borrow muss vor `despawn` enden).
+            let mut pickup: Option<(u32, String)> = None;
+            if let Some(t) = result.tile() {
+                let pos = t.pos;
+                // map (nicht filter_map): EntityKind hat heute nur PowerupWord.
+                // Ein künftiges Variant bricht das Match exhaustiv → bewusster
+                // Revisit (statt stilles Überspringen).
+                let words: Vec<(u32, &PowerupWord)> = arena
+                    .entities
+                    .iter()
+                    .map(|ent| match &ent.kind {
+                        EntityKind::PowerupWord(w) => (ent.id, w),
+                    })
+                    .collect();
+                if let TraceStep::Completed { id } = self.trace.observe(pos, c, dir, &words) {
+                    if let Some((_, w)) = words.iter().find(|(wid, _)| *wid == id) {
+                        pickup = Some((id, w.name.clone()));
+                    }
+                }
+            }
+
             self.last_event = match &result {
                 StepResult::Wrote(_) => format!("wrote '{}'", c),
                 StepResult::WroteAndTurned(_, d) => format!("turned: {:?}", d),
                 StepResult::WroteAndStopped(_) => "paused".into(),
                 StepResult::Erased => "erased".into(),
             };
-            match result {
-                StepResult::WroteAndTurned(_, d) => {
-                    self.notifications
-                        .push(NotifyKind::Info, "⟹  TURNED", format!("{d:?}"));
+
+            // Pickup anwenden (host-autoritatives Despawn ist der MP-Andockpunkt;
+            // Single despawnt direkt die lokale Arena).
+            if let Some((id, name)) = pickup {
+                arena.despawn(id);
+                self.inventory.add(Powerup {
+                    id,
+                    name: name.clone(),
+                    effect_tag: EffectTag::Test,
+                });
+                self.notifications.push(NotifyKind::Event, "✦  PICKUP", name);
+            } else {
+                // Bestehende Turn/Stop-Notifications nur, wenn kein Pickup lief.
+                match result {
+                    StepResult::WroteAndTurned(_, d) => {
+                        self.notifications
+                            .push(NotifyKind::Info, "⟹  TURNED", format!("{d:?}"));
+                    }
+                    StepResult::WroteAndStopped(_) => {
+                        self.notifications
+                            .push(NotifyKind::Info, "⟹  STOP", "next char overwrites");
+                    }
+                    _ => {}
                 }
-                StepResult::WroteAndStopped(_) => {
-                    self.notifications
-                        .push(NotifyKind::Info, "⟹  STOP", "next char overwrites");
-                }
-                _ => {}
             }
         }
     }
@@ -162,4 +286,105 @@ impl App {
     }
 
     pub fn on_enter(&mut self) {}
+}
+
+#[cfg(test)]
+mod w2_tests {
+    use super::*;
+    use crate::game::arena::EntityKind;
+    use crate::game::powerup::{Axis, EffectTag, PowerupWord};
+
+    fn spawn_dash(app: &mut App) {
+        app.arena_mut().unwrap().spawn(
+            (3, 0),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "dash".into(),
+                origin: (3, 0),
+                axis: Axis::Horizontal,
+                reversed: false,
+            }),
+        );
+    }
+
+    #[test]
+    fn tracing_word_picks_it_up_into_inventory_and_despawns() {
+        let mut app = App::new(); // player at (0,0) moving Right
+        spawn_dash(&mut app);
+        // 3 filler chars walk the cursor to (3,0), then "dash" arms+completes.
+        for ch in "xxxdash".chars() {
+            app.on_char(ch);
+        }
+        assert_eq!(app.inventory.len(), 1, "dash should be collected");
+        assert_eq!(app.inventory.items[0].name, "dash");
+        assert!(app.arena().entities.is_empty(), "picked-up word despawns");
+    }
+
+    #[test]
+    fn cast_exact_name_dispatches_and_leaves_cast_mode() {
+        let mut app = App::new();
+        app.inventory.add(Powerup {
+            id: 0,
+            name: "dash".into(),
+            effect_tag: EffectTag::Test,
+        });
+        app.toggle_cast();
+        assert!(app.cast_mode);
+        for ch in "dash".chars() {
+            app.on_char(ch); // routed to cast buffer while cast_mode
+        }
+        assert!(!app.cast_mode, "exact match dispatches and exits cast mode");
+        assert!(app.cast_wave.is_some(), "dispatch fired the cast wave");
+    }
+
+    #[test]
+    fn cast_chars_do_not_write_tiles_or_move_cursor() {
+        let mut app = App::new();
+        app.toggle_cast();
+        let before = app.local_engine().unwrap().cursor;
+        for ch in "abc".chars() {
+            app.on_char(ch);
+        }
+        assert_eq!(
+            app.local_engine().unwrap().cursor,
+            before,
+            "cast input must not move the cursor"
+        );
+        assert_eq!(app.cast_buffer, "abc");
+    }
+
+    #[test]
+    fn toggle_cast_off_clears_buffer() {
+        let mut app = App::new();
+        app.toggle_cast();
+        app.on_char('d');
+        app.toggle_cast(); // off
+        assert!(!app.cast_mode);
+        assert!(app.cast_buffer.is_empty());
+    }
+
+    #[test]
+    fn snap_picks_up_word_when_approaching_one_row_off() {
+        // Spieler läuft Right, aber eine Reihe UNTER dem Wort (y=1 statt y=0).
+        // Ohne Snap würde "dash" nie armen; mit Snap rastet 'd' aufs Eintritts-Tile.
+        let mut app = App::new(); // Cursor (0,0), Richtung Right
+        app.arena_mut().unwrap().spawn(
+            (3, 0),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "dash".into(),
+                origin: (3, 0),
+                axis: Axis::Horizontal,
+                reversed: false,
+            }),
+        );
+        // Cursor auf (2,1) bringen: 3 Filler im Idle (eine Reihe unter dem Wort).
+        if let Mode::Single(e, _) = &mut app.mode {
+            e.cursor = (2, 1);
+        }
+        for ch in "dash".chars() {
+            app.on_char(ch);
+        }
+        assert_eq!(app.inventory.len(), 1, "Snap sollte das Andocken erlauben");
+        assert_eq!(app.inventory.items[0].name, "dash");
+        assert!(app.arena().entities.is_empty(), "Wort despawnt nach Pickup");
+    }
 }

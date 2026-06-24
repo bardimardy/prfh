@@ -478,7 +478,12 @@ mod tests {
         assert!(s.arena().entities.is_empty());
         let msg = s.spawn_entity(
             (4, 2),
-            EntityKind::PowerupWord(PowerupWord { word: "sudo".into() }),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "sudo".into(),
+                origin: (4, 2),
+                axis: crate::game::powerup::Axis::Horizontal,
+                reversed: false,
+            }),
         );
         assert_eq!(s.arena().entities.len(), 1);
         match msg {

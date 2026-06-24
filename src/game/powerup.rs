@@ -1,0 +1,238 @@
+use serde::{Deserialize, Serialize};
+
+/// Achse, entlang der ein Powerup-Wort auf der Map liegt. `Direction` bleibt
+/// 4-Wege (Powerup-Spec §9); die Achse ist die Orientierung der Tiles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Axis {
+    Horizontal,
+    Vertical,
+}
+
+impl Axis {
+    /// Einheitsvektor in aufsteigender Koordinatenrichtung der Achse.
+    pub fn unit(self) -> (i32, i32) {
+        match self {
+            Axis::Horizontal => (1, 0),
+            Axis::Vertical => (0, 1),
+        }
+    }
+}
+
+/// Fachlicher Effekt-Tag eines Powerups. Der Cast-Dispatch matcht darauf.
+/// Vorerst nur das Test-Powerup; additiv erweiterbar (Dash, Revert, …).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EffectTag {
+    Test,
+}
+
+/// Ein eingesammeltes Powerup im Inventar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Powerup {
+    pub id: u32,
+    pub name: String,
+    pub effect_tag: EffectTag,
+}
+
+/// Toleranz-Radius (Chebyshev) fürs Andocken: wie weit neben dem Eintritts-Tile
+/// der Cursor stehen darf und trotzdem aufs Wort gesnappt wird.
+pub const ENTRY_SNAP_RADIUS: i32 = 1;
+
+/// Ein noch nicht eingesammeltes Powerup-Wort auf der Map. Das Layout
+/// (Origin/Achse/Reversed → Tile-Positionen + Keystroke→Tile-Mapping) ist der
+/// W2-Job (Welt-Spec §4, Powerup-Spec §5). Im Substrat (`arena.rs`) ist es nur
+/// ein `EntityKind`-Payload.
+///
+/// **Reversed-Regel (Powerup-Spec §5):** Der Spieler tippt IMMER das logische
+/// Wort `name`. `reversed` betrifft nur Platzierung/Rendering: die physischen
+/// Tiles `p_0..p_{n-1}` liegen aufsteigend ab `origin`; bei `reversed` zeigt
+/// `p_i` den Buchstaben `name[n-1-i]`. Der k-te Tastenanschlag landet auf dem
+/// Tile, das `name[k]` zeigt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PowerupWord {
+    pub name: String,
+    pub origin: (i32, i32),
+    pub axis: Axis,
+    pub reversed: bool,
+}
+
+impl PowerupWord {
+    pub fn len(&self) -> usize {
+        self.name.chars().count()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.name.is_empty()
+    }
+
+    /// Physische Tiles `p_0..p_{n-1}`, aufsteigend ab `origin` entlang der Achse.
+    pub fn tiles(&self) -> Vec<(i32, i32)> {
+        let (dx, dy) = self.axis.unit();
+        (0..self.len() as i32)
+            .map(|i| (self.origin.0 + dx * i, self.origin.1 + dy * i))
+            .collect()
+    }
+
+    /// Tile, auf dem der k-te logische Tastenanschlag landet.
+    pub fn keystroke_tile(&self, k: usize) -> Option<(i32, i32)> {
+        let n = self.len();
+        if k >= n {
+            return None;
+        }
+        let idx = if self.reversed { n - 1 - k } else { k } as i32;
+        let (dx, dy) = self.axis.unit();
+        Some((self.origin.0 + dx * idx, self.origin.1 + dy * idx))
+    }
+
+    /// Erwarteter logischer Buchstabe für Keystroke `k` (lowercase, ASCII).
+    pub fn expected_char(&self, k: usize) -> Option<char> {
+        self.name.chars().nth(k).map(|c| c.to_ascii_lowercase())
+    }
+
+    /// Eintritts-Tile: wo der Spieler `name[0]` schreiben muss.
+    pub fn entry_tile(&self) -> (i32, i32) {
+        self.keystroke_tile(0).unwrap_or(self.origin)
+    }
+
+    /// Lauf-/Traversier-Richtung vom Eintritts-Tile ins Wort hinein
+    /// (Keystroke 0 → Keystroke 1). Für 1-Buchstaben-Wörter `(0,0)`.
+    pub fn run_direction(&self) -> (i32, i32) {
+        let a = self.entry_tile();
+        match self.keystroke_tile(1) {
+            Some(b) => (b.0 - a.0, b.1 - a.1),
+            None => (0, 0),
+        }
+    }
+
+    /// Snap-Ziel fürs tolerante Andocken: `Some(entry_tile)`, wenn der Cursor nah
+    /// genug am Eintritts-Tile ist (Chebyshev ≤ `radius`), in Laufrichtung anfährt
+    /// und der erste Buchstabe stimmt. Sonst `None`. `dir_delta` als `(i32,i32)`,
+    /// um keinen `Direction`-Import (writing.rs) hereinzuziehen. 1-Buchstaben-Wörter
+    /// haben keine Lauf-Achse → Richtungs-Bedingung entfällt (wie in der Trace-FSM).
+    pub fn entry_snap(
+        &self,
+        cursor: (i32, i32),
+        dir_delta: (i32, i32),
+        ch: char,
+        radius: i32,
+    ) -> Option<(i32, i32)> {
+        let entry = self.entry_tile();
+        let cheb = (cursor.0 - entry.0).abs().max((cursor.1 - entry.1).abs());
+        let dir_ok = self.len() <= 1 || dir_delta == self.run_direction();
+        let char_ok = self.expected_char(0) == Some(ch.to_ascii_lowercase());
+        (cheb <= radius && dir_ok && char_ok).then_some(entry)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn word(name: &str, origin: (i32, i32), axis: Axis, reversed: bool) -> PowerupWord {
+        PowerupWord {
+            name: name.into(),
+            origin,
+            axis,
+            reversed,
+        }
+    }
+
+    #[test]
+    fn tiles_ascend_from_origin_along_axis() {
+        let w = word("dash", (3, 0), Axis::Horizontal, false);
+        assert_eq!(w.tiles(), vec![(3, 0), (4, 0), (5, 0), (6, 0)]);
+        let v = word("up", (0, 2), Axis::Vertical, false);
+        assert_eq!(v.tiles(), vec![(0, 2), (0, 3)]);
+    }
+
+    #[test]
+    fn keystroke_mapping_forward_lands_in_typing_order() {
+        // not reversed: keystroke k → tile p_k; player types d,a,s,h at p_0..p_3.
+        let w = word("dash", (3, 0), Axis::Horizontal, false);
+        assert_eq!(w.keystroke_tile(0), Some((3, 0)));
+        assert_eq!(w.keystroke_tile(3), Some((6, 0)));
+        assert_eq!(w.keystroke_tile(4), None);
+        assert_eq!(w.entry_tile(), (3, 0));
+        assert_eq!(w.run_direction(), (1, 0));
+    }
+
+    #[test]
+    fn keystroke_mapping_reversed_starts_at_high_end() {
+        // reversed: name[0] sits at p_{n-1}; player enters at the high end moving
+        // back toward origin. Letters typed are STILL d,a,s,h (logical word).
+        let w = word("dash", (3, 0), Axis::Horizontal, true);
+        assert_eq!(w.keystroke_tile(0), Some((6, 0))); // 'd' at p_3
+        assert_eq!(w.keystroke_tile(1), Some((5, 0))); // 'a' at p_2
+        assert_eq!(w.keystroke_tile(3), Some((3, 0))); // 'h' at p_0
+        assert_eq!(w.entry_tile(), (6, 0));
+        assert_eq!(w.run_direction(), (-1, 0));
+        assert_eq!(w.expected_char(0), Some('d'));
+    }
+
+    #[test]
+    fn vertical_reversed_runs_upward() {
+        let w = word("up", (0, 2), Axis::Vertical, true);
+        assert_eq!(w.entry_tile(), (0, 3)); // p_1
+        assert_eq!(w.run_direction(), (0, -1));
+    }
+
+    #[test]
+    fn expected_char_is_logical_word_lowercased() {
+        let w = word("Dash", (0, 0), Axis::Horizontal, false);
+        assert_eq!(w.expected_char(0), Some('d'));
+        assert_eq!(w.expected_char(3), Some('h'));
+        assert_eq!(w.expected_char(9), None);
+    }
+
+    #[test]
+    fn entry_snap_exact_hit_is_noop() {
+        // Exakter Treffer → Snap-Ziel == aktuelle Position (no-op, heute-kompatibel).
+        let w = word("dash", (3, 0), Axis::Horizontal, false);
+        assert_eq!(
+            w.entry_snap((3, 0), (1, 0), 'd', ENTRY_SNAP_RADIUS),
+            Some((3, 0))
+        );
+    }
+
+    #[test]
+    fn entry_snap_pulls_from_one_row_off() {
+        // Eine Reihe versetzt, richtige Richtung + Buchstabe → snappt aufs Eintritts-Tile.
+        let w = word("dash", (3, 0), Axis::Horizontal, false);
+        assert_eq!(
+            w.entry_snap((3, 1), (1, 0), 'd', ENTRY_SNAP_RADIUS),
+            Some((3, 0))
+        );
+        assert_eq!(
+            w.entry_snap((2, 1), (1, 0), 'd', ENTRY_SNAP_RADIUS),
+            Some((3, 0))
+        );
+    }
+
+    #[test]
+    fn entry_snap_rejects_out_of_radius() {
+        let w = word("dash", (3, 0), Axis::Horizontal, false);
+        assert_eq!(w.entry_snap((3, 2), (1, 0), 'd', ENTRY_SNAP_RADIUS), None);
+    }
+
+    #[test]
+    fn entry_snap_rejects_wrong_direction() {
+        let w = word("dash", (3, 0), Axis::Horizontal, false);
+        // Nah + richtiger Buchstabe, aber läuft nach unten statt nach rechts.
+        assert_eq!(w.entry_snap((3, 1), (0, 1), 'd', ENTRY_SNAP_RADIUS), None);
+    }
+
+    #[test]
+    fn entry_snap_rejects_wrong_char() {
+        let w = word("dash", (3, 0), Axis::Horizontal, false);
+        assert_eq!(w.entry_snap((3, 1), (1, 0), 'x', ENTRY_SNAP_RADIUS), None);
+    }
+
+    #[test]
+    fn entry_snap_single_char_ignores_direction() {
+        // 1-Buchstaben-Wort hat keine Lauf-Achse → Richtung egal.
+        let w = word("x", (2, 2), Axis::Horizontal, false);
+        assert_eq!(
+            w.entry_snap((2, 3), (0, -1), 'x', ENTRY_SNAP_RADIUS),
+            Some((2, 2))
+        );
+    }
+}
