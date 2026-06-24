@@ -1,3 +1,4 @@
+use crate::game::arena::{Arena, EntityKind};
 use serde::{Deserialize, Serialize};
 
 /// Achse, entlang der ein Powerup-Wort auf der Map liegt. `Direction` bleibt
@@ -123,9 +124,56 @@ impl PowerupWord {
     }
 }
 
+/// Platziert die feste Start-Menge Powerup-Wörter in die Arena. Host-autoritativer
+/// Andockpunkt für spätere prozedurale Generierung (Welt-Spec §4). `dash` horizontal,
+/// `revert` vertikal, `warp` horizontal reversed — gestreut, vom Start (0,0) weg.
+pub fn spawn_powerups(arena: &mut Arena) {
+    let seed = [
+        ("dash", (6, 0), Axis::Horizontal, false),
+        ("revert", (0, 5), Axis::Vertical, false),
+        ("warp", (-12, 3), Axis::Horizontal, true),
+    ];
+    for (name, origin, axis, reversed) in seed {
+        arena.spawn(
+            origin,
+            EntityKind::PowerupWord(PowerupWord {
+                name: name.into(),
+                origin,
+                axis,
+                reversed,
+            }),
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn spawn_powerups_seeds_the_fixed_starter_set() {
+        use crate::game::arena::{Arena, EntityKind};
+        let mut a = Arena::new();
+        spawn_powerups(&mut a);
+        // Drei Starter-Wörter an festen Positionen (Andockpunkt für spätere prozedurale Gen).
+        let names: Vec<&str> = a
+            .entities
+            .iter()
+            .map(|e| match &e.kind {
+                EntityKind::PowerupWord(w) => w.name.as_str(),
+            })
+            .collect();
+        assert_eq!(names, vec!["dash", "revert", "warp"]);
+        // Positionen deterministisch und vom Start (0,0) weg gestreut.
+        let origins: Vec<(i32, i32)> = a
+            .entities
+            .iter()
+            .map(|e| match &e.kind {
+                EntityKind::PowerupWord(w) => w.origin,
+            })
+            .collect();
+        assert_eq!(origins, vec![(6, 0), (0, 5), (-12, 3)]);
+    }
 
     fn word(name: &str, origin: (i32, i32), axis: Axis, reversed: bool) -> PowerupWord {
         PowerupWord {

@@ -42,9 +42,24 @@ pub struct App {
 }
 
 impl App {
-    /// Alias for `new_single` — used by render tests imported from main.
+    /// Leerer App-Zustand ohne vorgeseedete Arena — für Unit-/Render-Tests.
+    /// Produktions-Einstieg ist `new_single` (mit `spawn_powerups`).
     pub fn new() -> Self {
-        Self::new_single()
+        let arena = Arena::new();
+        Self {
+            should_quit: false,
+            mode: Mode::Single(WritingEngine::new((0, 0)), arena),
+            last_event: String::from("type to write yourself a path"),
+            notifications: NotificationStack::new(),
+            debug: false,
+            debug_lines: Vec::new(),
+            inventory: Inventory::new(),
+            trace: Trace::new(),
+            cast_mode: false,
+            cast_buffer: String::new(),
+            cast_wave: None,
+            anim_clock: Duration::ZERO,
+        }
     }
 
     pub fn new_with_mode(mode: Mode) -> Self {
@@ -55,19 +70,9 @@ impl App {
 
     pub fn new_single() -> Self {
         let mut arena = Arena::new();
-        // Test-Powerup nur unter PRFH_DEBUG: validiert den ganzen Flow
-        // Pickup→Inventar→Cast→Dispatch. Entfernen via Follow-up-Issue.
-        if std::env::var("PRFH_DEBUG").is_ok() {
-            arena.spawn(
-                (3, 0),
-                EntityKind::PowerupWord(PowerupWord {
-                    name: "dash".into(),
-                    origin: (3, 0),
-                    axis: crate::game::powerup::Axis::Horizontal,
-                    reversed: false,
-                }),
-            );
-        }
+        // Echtes Spawn (Issue D): reguläre Start-Menge. Host-autoritativ; in MP
+        // seedet der Host, Clients erhalten die Wörter über EntitySpawned/Snapshot.
+        crate::game::powerup::spawn_powerups(&mut arena);
         Self {
             should_quit: false,
             mode: Mode::Single(WritingEngine::new((0, 0)), arena),
