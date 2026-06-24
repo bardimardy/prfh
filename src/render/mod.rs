@@ -228,31 +228,6 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena, clock
     let mut grid: Vec<Vec<Option<(char, Style)>>> = vec![vec![None; w as usize]; h as usize];
     let t = clock.as_secs_f32();
 
-    // Entitäten zuerst zeichnen (Trails liegen optisch darüber). Dieselbe
-    // cursor-zentrierte Transform wie die Tiles. Mehr-Tile-Wörter: jedes Tile
-    // an seiner Position. Dezentes Ghost-Styling (Shimmer-Look: Task 7).
-    for e in &arena.entities {
-        match &e.kind {
-            EntityKind::PowerupWord(pw) => {
-                let letters: Vec<char> = pw.name.chars().collect();
-                for (i, tile) in pw.tiles().iter().enumerate() {
-                    let rx = tile.0 - cursor.0 + center.0;
-                    let ry = tile.1 - cursor.1 + center.1;
-                    if rx < 0 || ry < 0 || rx >= w || ry >= h {
-                        continue;
-                    }
-                    // reversed: p_i zeigt name[n-1-i]; sonst name[i].
-                    let ch = if pw.reversed {
-                        letters[letters.len() - 1 - i]
-                    } else {
-                        letters[i]
-                    };
-                    grid[ry as usize][rx as usize] = Some((ch, shimmer_style(t, i)));
-                }
-            }
-        }
-    }
-
     // Alle Tiles aller Spieler nach tick sortieren, damit das zuletzt
     // geschriebene Tile an jeder Zelle gewinnt (fixt Host-vs-Client-Reihenfolge).
     let mut all_tiles: Vec<(
@@ -291,6 +266,30 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena, clock
             Style::default().fg(Color::Rgb(scale(color.r), scale(color.g), scale(color.b)))
         };
         grid[ry as usize][rx as usize] = Some((tile.ch, style));
+    }
+
+    // Powerup-Wörter NACH den Trails zeichnen → Top-Layer: der eigene Trail
+    // überdeckt das Wort nicht mehr (Pickup-Gefühl B). Cursor-zentrierte
+    // Transform wie die Tiles; jedes Tile an seiner Position, Shimmer-Idle-Look.
+    for e in &arena.entities {
+        match &e.kind {
+            EntityKind::PowerupWord(pw) => {
+                let letters: Vec<char> = pw.name.chars().collect();
+                for (i, tile) in pw.tiles().iter().enumerate() {
+                    let rx = tile.0 - cursor.0 + center.0;
+                    let ry = tile.1 - cursor.1 + center.1;
+                    if rx < 0 || ry < 0 || rx >= w || ry >= h {
+                        continue;
+                    }
+                    let ch = if pw.reversed {
+                        letters[letters.len() - 1 - i]
+                    } else {
+                        letters[i]
+                    };
+                    grid[ry as usize][rx as usize] = Some((ch, shimmer_style(t, i)));
+                }
+            }
+        }
     }
 
     // Cursor-Marker: Block-Stil in Akzentfarbe (eigener Spieler), Mitspieler in
@@ -612,5 +611,45 @@ mod tests {
         for _ in 0..40 {
             process_effects(&mut mgr, Duration::from_millis(50), &mut buf, area);
         }
+    }
+
+    #[test]
+    fn powerup_word_not_hidden_by_trail_tile() {
+        use crate::app::Mode;
+        use crate::game::arena::EntityKind;
+        use crate::game::powerup::{Axis, PowerupWord};
+        use crate::game::writing::{Tile, TILE_MAX_BRIGHTNESS};
+        let mut app = App::new();
+        // Wort offset vom Cursor (Cursor-Marker soll nicht stören): origin (5,-2).
+        app.arena_mut().unwrap().spawn(
+            (5, -2),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "zoom".into(),
+                origin: (5, -2),
+                axis: Axis::Horizontal,
+                reversed: false,
+            }),
+        );
+        // Ein Trail-Tile genau AUF das erste Wort-Tile (5,-2) legen.
+        if let Mode::Single(e, _) = &mut app.mode {
+            e.trail.push(Tile {
+                pos: (5, -2),
+                ch: 'Q',
+                tick: 99,
+                glow: 0,
+                brightness: TILE_MAX_BRIGHTNESS,
+                written_pace: 0.0,
+            });
+        }
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        let buf = terminal.backend().buffer();
+        // Screen-Transform: (5,-2) - (0,0) + (40,12) = (45,10).
+        assert_eq!(
+            buf.cell((45, 10)).unwrap().symbol(),
+            "z",
+            "Powerup-Wort muss über dem Trail liegen (Top-Layer)"
+        );
     }
 }
