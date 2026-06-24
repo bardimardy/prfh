@@ -45,8 +45,6 @@ pub struct App {
     pub cast_buffer: String,
     /// Alter der laufenden Cast-Welle (render-time-Ring); None = keine Welle.
     pub cast_wave: Option<Duration>,
-    /// Monotone Animations-Uhr fürs render-time-Shimmer (vom Render getrieben).
-    pub anim_clock: Duration,
     /// Laufende Pickup-Animation (render-time); None = keine Anim aktiv.
     pub pickup_anim: Option<PickupAnim>,
     /// Inventar-Overlay sichtbar.
@@ -70,7 +68,6 @@ impl App {
             cast_mode: false,
             cast_buffer: String::new(),
             cast_wave: None,
-            anim_clock: Duration::ZERO,
             pickup_anim: None,
             inv_visible: false,
         }
@@ -99,7 +96,6 @@ impl App {
             cast_mode: false,
             cast_buffer: String::new(),
             cast_wave: None,
-            anim_clock: Duration::ZERO,
             pickup_anim: None,
             inv_visible: false,
         }

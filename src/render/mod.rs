@@ -33,7 +33,6 @@ pub fn process_effects<K: Clone + std::fmt::Debug + Ord>(
 /// Notifications (deshalb `&mut App`).
 pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
     // Animations-Uhren render-time fortschreiben (Cast-Welle, Pickup).
-    app.anim_clock += elapsed;
     if let Some(age) = app.cast_wave.as_mut() {
         *age += elapsed;
         if age.as_secs_f32() > RING_DUR {
