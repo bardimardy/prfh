@@ -202,14 +202,18 @@ impl App {
     /// Aktivierungs-Dispatch-Hook (Powerup-Spec §7): matcht `effect_tag`. Vorerst
     /// Log + Banner + render-time-Cast-Welle (echte Effekte wie Dash: später).
     fn dispatch_cast(&mut self, tag: EffectTag, name: &str) {
-        match tag {
+        match &tag {
             EffectTag::Test => {
                 self.notifications
                     .push(NotifyKind::Event, "⚡  CAST", name.to_string());
-                self.cast_wave = Some(Duration::ZERO);
                 self.debug_log(format!("cast dispatch: {name} ({tag:?})"));
             }
         }
+        // Aktivierungs-Welle über denselben EffectEvent-Seam wie der Pickup.
+        self.apply_effect_event(crate::game::powerup::EffectEvent::Activation {
+            tag,
+            name: name.to_string(),
+        });
     }
 
     /// Single-player local input. (Host/Client routing added in Task 9.)
@@ -221,6 +225,10 @@ impl App {
             self.on_cast_char(c);
             return;
         }
+        // Deferred EffectEvent: muss nach dem Ende des Arena-Borrows angewendet
+        // werden, da `apply_effect_event` `&mut self` benötigt.
+        let mut deferred_ev: Option<crate::game::powerup::EffectEvent> = None;
+
         if let Mode::Single(e, arena) = &mut self.mode {
             let dir = e.direction;
 
@@ -281,7 +289,11 @@ impl App {
                     name: name.clone(),
                     effect_tag: EffectTag::Test,
                 });
-                self.notifications.push(NotifyKind::Event, "✦  PICKUP", name);
+                self.notifications.push(NotifyKind::Event, "✦  PICKUP", name.clone());
+                // Host-autoritatives Event → lokale render-time-Pickup-Anim auf der
+                // gerade hinzugefügten Zeile (Design §3.1). Slot = letzter Index.
+                let slot = self.inventory.len() - 1;
+                deferred_ev = Some(crate::game::powerup::EffectEvent::Pickup { slot, name });
             } else {
                 // Bestehende Turn/Stop-Notifications nur, wenn kein Pickup lief.
                 match result {
@@ -296,6 +308,11 @@ impl App {
                     _ => {}
                 }
             }
+        }
+
+        // Arena-Borrow ist beendet; jetzt sicher `&mut self` aufrufen.
+        if let Some(ev) = deferred_ev {
+            self.apply_effect_event(ev);
         }
     }
 
@@ -441,6 +458,19 @@ mod w2_tests {
         app.toggle_cast(); // off
         assert!(!app.cast_mode);
         assert!(app.cast_buffer.is_empty());
+    }
+
+    #[test]
+    fn completing_a_trace_starts_pickup_anim_on_the_new_slot() {
+        let mut app = App::new(); // kein spawn_powerups — saubere Arena
+        spawn_dash(&mut app); // legt "dash" bei (3,0) horizontal
+        // 3 Filler-Chars (xxx) bewegen den Cursor zu (3,0); dann armt+komplettiert "dash".
+        for c in "xxxdash".chars() {
+            app.on_char(c);
+        }
+        assert_eq!(app.inventory.len(), 1);
+        let a = app.pickup_anim.as_ref().expect("pickup anim fired");
+        assert_eq!(a.slot, 0, "slot == index der neuen (ersten) Inventar-Zeile");
     }
 
     #[test]
