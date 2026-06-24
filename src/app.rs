@@ -1,6 +1,6 @@
 use crate::game::arena::{Arena, EntityKind};
 use crate::game::inventory::Inventory;
-use crate::game::powerup::{EffectTag, Powerup, PowerupWord};
+use crate::game::powerup::{EffectTag, Powerup, PowerupWord, ENTRY_SNAP_RADIUS};
 use crate::game::world::{PlayerId, PlayerView, WorldView};
 use crate::game::writing::{StepResult, Trace, TraceStep, WritingEngine};
 use crate::hud::notify::{NotificationStack, NotifyKind};
@@ -202,6 +202,22 @@ impl App {
         }
         if let Mode::Single(e, arena) = &mut self.mode {
             let dir = e.direction;
+
+            // Toleranter Snap-on-Arm (Pickup-Gefühl A): steht der Cursor ≤1 Tile
+            // neben einem Eintritts-Tile, fährt in Laufrichtung an und passt der
+            // erste Buchstabe, rastet er aufs Eintritts-Tile ein — BEVOR on_char
+            // schreibt. Nur im Idle (laufender Trace soll nicht weggerissen
+            // werden). Bei exaktem Treffer ist es ein no-op. Die Trace-FSM bleibt
+            // Beobachter und sieht danach ein exaktes Eintritts-Tile.
+            if !self.trace.is_tracing() {
+                let dd = dir.delta();
+                if let Some(target) = arena.entities.iter().find_map(|ent| match &ent.kind {
+                    EntityKind::PowerupWord(w) => w.entry_snap(e.cursor, dd, c, ENTRY_SNAP_RADIUS),
+                }) {
+                    e.cursor = target;
+                }
+            }
+
             e.trace_suspended = self.trace.is_tracing();
             let result = e.on_char(c);
 
@@ -344,5 +360,31 @@ mod w2_tests {
         app.toggle_cast(); // off
         assert!(!app.cast_mode);
         assert!(app.cast_buffer.is_empty());
+    }
+
+    #[test]
+    fn snap_picks_up_word_when_approaching_one_row_off() {
+        // Spieler läuft Right, aber eine Reihe UNTER dem Wort (y=1 statt y=0).
+        // Ohne Snap würde "dash" nie armen; mit Snap rastet 'd' aufs Eintritts-Tile.
+        let mut app = App::new(); // Cursor (0,0), Richtung Right
+        app.arena_mut().unwrap().spawn(
+            (3, 0),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "dash".into(),
+                origin: (3, 0),
+                axis: Axis::Horizontal,
+                reversed: false,
+            }),
+        );
+        // Cursor auf (2,1) bringen: 3 Filler im Idle (eine Reihe unter dem Wort).
+        if let Mode::Single(e, _) = &mut app.mode {
+            e.cursor = (2, 1);
+        }
+        for ch in "dash".chars() {
+            app.on_char(ch);
+        }
+        assert_eq!(app.inventory.len(), 1, "Snap sollte das Andocken erlauben");
+        assert_eq!(app.inventory.items[0].name, "dash");
+        assert!(app.arena().entities.is_empty(), "Wort despawnt nach Pickup");
     }
 }
