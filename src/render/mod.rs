@@ -32,14 +32,36 @@ pub fn process_effects<K: Clone + std::fmt::Debug + Ord>(
 /// schweben als Overlays an Ankern darüber. `elapsed` treibt die zeitbasierten
 /// Notifications (deshalb `&mut App`).
 pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
+    // Animations-Uhren render-time fortschreiben (shimmer-Phase, Cast-Welle).
+    app.anim_clock += elapsed;
+    if let Some(age) = app.cast_wave.as_mut() {
+        *age += elapsed;
+        if age.as_secs_f32() > RING_DUR {
+            app.cast_wave = None;
+        }
+    }
+
     let area = f.area();
     let world = app.world_view();
+    let clock = app.anim_clock;
+    let cast_wave = app.cast_wave;
+    let cast_mode = app.cast_mode;
 
-    draw_world(f, area, &world, app.arena());
+    draw_world(f, area, &world, app.arena(), clock);
     draw_hud(f, area, app, &world);
 
     // Notifications oben-mitte, über der Welt (mutabel: halten ihre Effekte).
     app.notifications.render(f.buffer_mut(), area, elapsed);
+
+    // Cast-Buffer-Indikator + transparenter Rainbow-Ring (render-time, über der
+    // Welt; der Ring berührt nur seine Bande → Spielfeld bleibt sichtbar).
+    if cast_mode {
+        draw_cast_buffer(f, area, app);
+    }
+    if let Some(age) = cast_wave {
+        let center = ((area.width / 2) as i32, (area.height / 2) as i32);
+        draw_cast_ring(f.buffer_mut(), center, age, area);
+    }
 
     let self_dead = world.players.iter().any(|p| p.is_self && p.is_dead);
     if self_dead {
@@ -195,7 +217,7 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
 
 /// Frameless Welt: füllt `area` komplett, cursor-zentriert. Kein Rahmen, kein
 /// Titel — die HUD-Overlays liegen darüber.
-fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena) {
+fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena, clock: Duration) {
     let w = area.width as i32;
     let h = area.height as i32;
     let center = (w / 2, h / 2);
@@ -204,6 +226,7 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena) {
     let cursor = self_player.map(|p| p.cursor).unwrap_or((0, 0));
 
     let mut grid: Vec<Vec<Option<(char, Style)>>> = vec![vec![None; w as usize]; h as usize];
+    let t = clock.as_secs_f32();
 
     // Entitäten zuerst zeichnen (Trails liegen optisch darüber). Dieselbe
     // cursor-zentrierte Transform wie die Tiles. Mehr-Tile-Wörter: jedes Tile
@@ -224,8 +247,7 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena) {
                     } else {
                         letters[i]
                     };
-                    grid[ry as usize][rx as usize] =
-                        Some((ch, Style::default().fg(theme::TEXT_DIM)));
+                    grid[ry as usize][rx as usize] = Some((ch, shimmer_style(t, i)));
                 }
             }
         }
@@ -316,6 +338,121 @@ fn draw_world(f: &mut Frame, area: Rect, world: &WorldView, arena: &Arena) {
         })
         .collect();
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// Dauer der Cast-Ring-Animation (Sekunden) — snappy/dynamisch.
+const RING_DUR: f32 = 0.38;
+
+/// shimmer Idle-Style eines Powerup-Tiles: gray→white-Band, das übers Wort
+/// wandert. Reine Funktion aus `(t, index)` → scroll-immun (Skill `effects`,
+/// Learning #37): das Wort scrollt cursor-zentriert mit, ein tachyonfx-Zell-
+/// Effekt würde über logisch andere Zeichen schmieren.
+fn shimmer_style(t: f32, i: usize) -> Style {
+    let phase = t * 7.0 - i as f32 * 0.95;
+    let l = 0.5 + 0.5 * phase.sin();
+    let v = (0x55_u16 as f32 + (0xE6 - 0x55) as f32 * l).round() as u8;
+    Style::default()
+        .fg(Color::Rgb(v, v, (v as u16 + 7).min(255) as u8))
+        .add_modifier(Modifier::BOLD)
+}
+
+/// HSL→RGB für den Rainbow-Cast-Ring (helle, pastellige Farben).
+fn hsl(h: f32, s: f32, l: f32) -> Color {
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let hp = h.rem_euclid(360.0) / 60.0;
+    let x = c * (1.0 - (hp % 2.0 - 1.0).abs());
+    let (r, g, b) = match hp as u32 {
+        0 => (c, x, 0.0),
+        1 => (x, c, 0.0),
+        2 => (0.0, c, x),
+        3 => (0.0, x, c),
+        4 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    let m = l - c / 2.0;
+    let to = |v: f32| ((v + m) * 255.0).round().clamp(0.0, 255.0) as u8;
+    Color::Rgb(to(r), to(g), to(b))
+}
+
+/// Transparenter Rainbow-Glyph-Ring (gewählte Cast-Signatur): berührt NUR die
+/// expandierende Ring-Bande — alle anderen Zellen bleiben unberührt, das
+/// Spielfeld bleibt sichtbar. Render-time-Math (`sqrt(dx² + 4·dy²)`, 2:1-
+/// Zellaspekt) → smear-frei über scrollendem Inhalt. Heller Pastell-Regenbogen
+/// nach Winkel, dünne Bande + Stipple → luftig. Bewusst KEIN tachyonfx-Effekt
+/// (`evolve_into` blankt nicht-erreichte Zellen auf ' ' → verdeckt das Feld).
+fn draw_cast_ring(buf: &mut Buffer, center: (i32, i32), age: Duration, area: Rect) {
+    const MAXR: f32 = 17.0;
+    const BAND: f32 = 1.5;
+    let (cx, cy) = center;
+    let p = (age.as_secs_f32() / RING_DUR).clamp(0.0, 1.0);
+    let r = (1.0 - (1.0 - p) * (1.0 - p)) * MAXR; // QuadOut
+    let life = 1.0 - p;
+    for y in area.top() as i32..area.bottom() as i32 {
+        for x in area.left() as i32..area.right() as i32 {
+            let dxf = (x - cx) as f32;
+            let dy = (y - cy) as f32 * 2.0;
+            let d = (dxf * dxf + dy * dy).sqrt();
+            let off = (d - r).abs();
+            if off > BAND {
+                continue;
+            }
+            let intensity = (1.0 - off / BAND) * life;
+            if intensity < 0.12 {
+                continue;
+            }
+            let hsh = (x as u64)
+                .wrapping_mul(2_654_435_761)
+                .wrapping_add((y as u64).wrapping_mul(40_503));
+            if hsh % 5 < 2 {
+                continue; // ~40 % Stipple → weniger dense
+            }
+            let hue = dy.atan2(dxf).to_degrees() + 360.0 + p * 50.0;
+            let col = hsl(hue, 0.55, 0.74 + 0.12 * intensity);
+            let ch = if intensity > 0.66 { '•' } else { '·' };
+            if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
+                cell.set_char(ch).set_fg(col);
+            }
+        }
+    }
+}
+
+/// Cast-Buffer-Indikator (Powerup-Spec §7): gematchter Prefix im Pink-Kasten,
+/// Rest gedämpft. Volles Inventar-Overlay-UI bleibt W3.
+fn draw_cast_buffer(f: &mut Frame, area: Rect, app: &App) {
+    let buf = &app.cast_buffer;
+    // Längster Prefix-Match bestimmt den hervorgehobenen Rest (Shadow-Suffix).
+    let suffix = app
+        .inventory
+        .prefix_matches(buf)
+        .first()
+        .map(|p| p.name[buf.len().min(p.name.len())..].to_string())
+        .unwrap_or_default();
+    let line = Line::from(vec![
+        Span::styled(
+            " cast ▸ ",
+            Style::default()
+                .fg(theme::ACCENT)
+                .bg(theme::PANEL_BG)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            buf.clone(),
+            Style::default()
+                .fg(theme::HIGHLIGHT_FG)
+                .bg(theme::HIGHLIGHT_BG)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            suffix,
+            Style::default().fg(theme::TEXT_DIM).bg(theme::PANEL_BG),
+        ),
+        Span::styled(" ", Style::default().bg(theme::PANEL_BG)),
+    ]);
+    let rect = anchor_rect(area, Anchor::BottomCenter, 28, 1);
+    f.render_widget(
+        Paragraph::new(line).style(Style::default().bg(theme::PANEL_BG)),
+        rect,
+    );
 }
 
 #[cfg(test)]
@@ -426,6 +563,34 @@ mod tests {
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         for _ in 0..60 {
+            terminal
+                .draw(|f| draw(f, &mut app, Duration::from_millis(50)))
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn cast_flow_renders_many_frames_without_panic() {
+        // Cast-Welle + Cast-Buffer + shimmer-Wort über viele Frames: darf nicht
+        // paniken (render-time-Math, kein tachyonfx).
+        use crate::game::arena::EntityKind;
+        use crate::game::powerup::{Axis, PowerupWord};
+        let mut app = App::new();
+        app.arena_mut().unwrap().spawn(
+            (3, 0),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "dash".into(),
+                origin: (3, 0),
+                axis: Axis::Horizontal,
+                reversed: false,
+            }),
+        );
+        app.cast_mode = true;
+        app.cast_buffer = "da".into();
+        app.cast_wave = Some(Duration::ZERO);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        for _ in 0..40 {
             terminal
                 .draw(|f| draw(f, &mut app, Duration::from_millis(50)))
                 .unwrap();
