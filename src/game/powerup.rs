@@ -33,6 +33,10 @@ pub struct Powerup {
     pub effect_tag: EffectTag,
 }
 
+/// Toleranz-Radius (Chebyshev) fürs Andocken: wie weit neben dem Eintritts-Tile
+/// der Cursor stehen darf und trotzdem aufs Wort gesnappt wird.
+pub const ENTRY_SNAP_RADIUS: i32 = 1;
+
 /// Ein noch nicht eingesammeltes Powerup-Wort auf der Map. Das Layout
 /// (Origin/Achse/Reversed → Tile-Positionen + Keystroke→Tile-Mapping) ist der
 /// W2-Job (Welt-Spec §4, Powerup-Spec §5). Im Substrat (`arena.rs`) ist es nur
@@ -98,6 +102,25 @@ impl PowerupWord {
             None => (0, 0),
         }
     }
+
+    /// Snap-Ziel fürs tolerante Andocken: `Some(entry_tile)`, wenn der Cursor nah
+    /// genug am Eintritts-Tile ist (Chebyshev ≤ `radius`), in Laufrichtung anfährt
+    /// und der erste Buchstabe stimmt. Sonst `None`. `dir_delta` als `(i32,i32)`,
+    /// um keinen `Direction`-Import (writing.rs) hereinzuziehen. 1-Buchstaben-Wörter
+    /// haben keine Lauf-Achse → Richtungs-Bedingung entfällt (wie in der Trace-FSM).
+    pub fn entry_snap(
+        &self,
+        cursor: (i32, i32),
+        dir_delta: (i32, i32),
+        ch: char,
+        radius: i32,
+    ) -> Option<(i32, i32)> {
+        let entry = self.entry_tile();
+        let cheb = (cursor.0 - entry.0).abs().max((cursor.1 - entry.1).abs());
+        let dir_ok = self.len() <= 1 || dir_delta == self.run_direction();
+        let char_ok = self.expected_char(0) == Some(ch.to_ascii_lowercase());
+        (cheb <= radius && dir_ok && char_ok).then_some(entry)
+    }
 }
 
 #[cfg(test)]
@@ -158,5 +181,58 @@ mod tests {
         assert_eq!(w.expected_char(0), Some('d'));
         assert_eq!(w.expected_char(3), Some('h'));
         assert_eq!(w.expected_char(9), None);
+    }
+
+    #[test]
+    fn entry_snap_exact_hit_is_noop() {
+        // Exakter Treffer → Snap-Ziel == aktuelle Position (no-op, heute-kompatibel).
+        let w = word("dash", (3, 0), Axis::Horizontal, false);
+        assert_eq!(
+            w.entry_snap((3, 0), (1, 0), 'd', ENTRY_SNAP_RADIUS),
+            Some((3, 0))
+        );
+    }
+
+    #[test]
+    fn entry_snap_pulls_from_one_row_off() {
+        // Eine Reihe versetzt, richtige Richtung + Buchstabe → snappt aufs Eintritts-Tile.
+        let w = word("dash", (3, 0), Axis::Horizontal, false);
+        assert_eq!(
+            w.entry_snap((3, 1), (1, 0), 'd', ENTRY_SNAP_RADIUS),
+            Some((3, 0))
+        );
+        assert_eq!(
+            w.entry_snap((2, 1), (1, 0), 'd', ENTRY_SNAP_RADIUS),
+            Some((3, 0))
+        );
+    }
+
+    #[test]
+    fn entry_snap_rejects_out_of_radius() {
+        let w = word("dash", (3, 0), Axis::Horizontal, false);
+        assert_eq!(w.entry_snap((3, 2), (1, 0), 'd', ENTRY_SNAP_RADIUS), None);
+    }
+
+    #[test]
+    fn entry_snap_rejects_wrong_direction() {
+        let w = word("dash", (3, 0), Axis::Horizontal, false);
+        // Nah + richtiger Buchstabe, aber läuft nach unten statt nach rechts.
+        assert_eq!(w.entry_snap((3, 1), (0, 1), 'd', ENTRY_SNAP_RADIUS), None);
+    }
+
+    #[test]
+    fn entry_snap_rejects_wrong_char() {
+        let w = word("dash", (3, 0), Axis::Horizontal, false);
+        assert_eq!(w.entry_snap((3, 1), (1, 0), 'x', ENTRY_SNAP_RADIUS), None);
+    }
+
+    #[test]
+    fn entry_snap_single_char_ignores_direction() {
+        // 1-Buchstaben-Wort hat keine Lauf-Achse → Richtung egal.
+        let w = word("x", (2, 2), Axis::Horizontal, false);
+        assert_eq!(
+            w.entry_snap((2, 3), (0, -1), 'x', ENTRY_SNAP_RADIUS),
+            Some((2, 2))
+        );
     }
 }
