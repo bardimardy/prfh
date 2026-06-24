@@ -212,6 +212,12 @@ pub struct WritingEngine {
     /// Sofort-Trigger-Erkennung, damit die eigenen Wort-Buchstaben (z. B. „up"
     /// in „update") nicht feuern (Powerup-Spec §6).
     pub trace_suspended: bool,
+    /// Lokale Direction-Historie: ein Eintrag pro `trail`-Tile, die Laufrichtung
+    /// zum Schreibzeitpunkt dieses Tiles (also VOR einem etwaigen Turn, den
+    /// genau dieses Zeichen ausgelöst hat). Erlaubt `on_backspace`, die Richtung
+    /// beim Zurücklöschen korrekt zu restaurieren. Rein lokaler Input-State —
+    /// nicht Teil von `Tile`, nicht serialisiert, nicht netzwerksynchronisiert.
+    pub dir_history: Vec<Direction>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -247,6 +253,7 @@ impl WritingEngine {
             tick: 0,
             pace: 0.0,
             trace_suspended: false,
+            dir_history: Vec::new(),
         }
     }
 
@@ -261,10 +268,23 @@ impl WritingEngine {
         }
         pace_decay(&mut self.pace);
         apply_trail_fade(&mut self.trail, visible_len_for_pace(self.pace));
+
+        // Keep dir_history back-aligned with the (possibly just-trimmed) trail:
+        // both grow newest-to-back, so trimming the front of the history by
+        // the same excess keeps `dir_history[i]` describing `trail[i]`.
+        let excess = self.dir_history.len().saturating_sub(self.trail.len());
+        if excess > 0 {
+            self.dir_history.drain(0..excess);
+        }
     }
 
     pub fn on_char(&mut self, ch: char) -> StepResult {
         let is_boundary = ch.is_whitespace() || matches!(ch, '.' | ',' | '!' | '?' | ';' | ':');
+
+        // Record the direction in effect WHEN this tile is written — i.e.
+        // before any turn this same char might trigger. Lets on_backspace
+        // restore the pre-turn direction when erasing back across a turn.
+        self.dir_history.push(self.direction);
 
         pace_bump(&mut self.pace);
         let tile = Tile {
@@ -342,6 +362,9 @@ impl WritingEngine {
     pub fn on_backspace(&mut self) -> StepResult {
         if let Some(last) = self.trail.pop() {
             self.cursor = last.pos;
+            if let Some(d) = self.dir_history.pop() {
+                self.direction = d;
+            }
             if !self.current_word.is_empty() {
                 self.current_word.pop();
             }
@@ -958,6 +981,89 @@ mod tests {
             "pace should decay to ~0 when idle, got {}",
             e.pace
         );
+    }
+
+    #[test]
+    fn backspace_across_turn_restores_pre_turn_direction() {
+        // Bug repro: typing "up" turns Right -> Up. One more char moves Up.
+        // Backspacing back across the turn must restore direction to Right,
+        // not leave it stuck at Up.
+        let mut e = WritingEngine::new((0, 0));
+        e.on_char('u');
+        e.on_char('p');
+        assert_eq!(e.direction, Direction::Up);
+        e.on_char('x');
+        assert_eq!(e.cursor, (2, -1));
+
+        // Erase 'x' (written going Up from (2,0)) -> cursor back to (2,0),
+        // direction still Up (this tile was written *after* the turn).
+        e.on_backspace();
+        assert_eq!(e.cursor, (2, 0));
+        assert_eq!(e.direction, Direction::Up);
+
+        // Erase 'p' (the tile that fired the turn; written *before* the turn
+        // took effect, going Right from (1,0)) -> cursor back to (1,0),
+        // direction restored to Right.
+        e.on_backspace();
+        assert_eq!(e.cursor, (1, 0));
+        assert_eq!(e.direction, Direction::Right);
+
+        // Erase 'u' -> cursor back to (0,0), direction still Right.
+        e.on_backspace();
+        assert_eq!(e.cursor, (0, 0));
+        assert_eq!(e.direction, Direction::Right);
+    }
+
+    #[test]
+    fn single_backspace_right_after_turn_restores_direction() {
+        let mut e = WritingEngine::new((0, 0));
+        e.on_char('u');
+        e.on_char('p');
+        assert_eq!(e.direction, Direction::Up);
+        e.on_backspace();
+        // The just-erased tile ('p') was written while direction was still
+        // Right (the turn only takes effect for the *next* char).
+        assert_eq!(e.direction, Direction::Right);
+    }
+
+    #[test]
+    fn backspace_on_empty_trail_is_noop() {
+        let mut e = WritingEngine::new((0, 0));
+        let r = e.on_backspace();
+        assert_eq!(e.direction, Direction::Right);
+        assert_eq!(e.cursor, (0, 0));
+        assert_eq!(r, StepResult::Erased);
+    }
+
+    #[test]
+    fn dir_history_stays_bounded_by_trail_after_trim() {
+        let mut e = WritingEngine::new((0, 0));
+        // Type fast (one char per frame) well past the max trail window,
+        // turning direction periodically to exercise dir_history pushes.
+        for (i, ch) in ('a'..='z').cycle().take(TRAIL_MAX_VISIBLE + 50).enumerate() {
+            e.on_char(ch);
+            if i % 7 == 0 {
+                e.on_char('u');
+                e.on_char('p');
+            }
+            e.tick_visuals();
+        }
+        assert!(
+            e.dir_history.len() <= e.trail.len(),
+            "dir_history ({}) must not outgrow trail ({})",
+            e.dir_history.len(),
+            e.trail.len()
+        );
+        // Backspace still restores correctly after trimming.
+        let dir_before = e.direction;
+        let cursor_before = e.cursor;
+        e.on_backspace();
+        assert_ne!(e.cursor, cursor_before);
+        // Direction after one backspace is whatever the erased tile's
+        // pre-write direction was — just assert it's a valid value and the
+        // history/trail stayed in lockstep (no panic, no desync).
+        let _ = dir_before;
+        assert!(e.dir_history.len() <= e.trail.len());
     }
 
     #[test]
