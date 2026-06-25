@@ -212,12 +212,17 @@ pub struct WritingEngine {
     /// Sofort-Trigger-Erkennung, damit die eigenen Wort-Buchstaben (z. B. „up"
     /// in „update") nicht feuern (Powerup-Spec §6).
     pub trace_suspended: bool,
-    /// Lokale Direction-Historie: ein Eintrag pro `trail`-Tile, die Laufrichtung
-    /// zum Schreibzeitpunkt dieses Tiles (also VOR einem etwaigen Turn, den
-    /// genau dieses Zeichen ausgelöst hat). Erlaubt `on_backspace`, die Richtung
-    /// beim Zurücklöschen korrekt zu restaurieren. Rein lokaler Input-State —
-    /// nicht Teil von `Tile`, nicht serialisiert, nicht netzwerksynchronisiert.
-    pub dir_history: Vec<Direction>,
+    /// Lokale Direction-Historie, **per Tile-`tick` verschlüsselt** (nicht per
+    /// Position): `(tick, Laufrichtung-zum-Schreibzeitpunkt)`, also die Richtung
+    /// VOR einem etwaigen Turn, den genau dieses Zeichen ausgelöst hat. Erlaubt
+    /// `on_backspace`, die Richtung beim Zurücklöschen korrekt zu restaurieren.
+    /// `tick` ist eine stabile, monoton wachsende Tile-Identität → die Historie
+    /// spiegelt in `tick_visuals` exakt die *überlebenden* Trail-Tiles (per
+    /// `retain` über die lebende Tick-Menge), desync-fest auch wenn der
+    /// pace-abhängige Fade Tiles aus der Trail-Mitte entfernt (Löcher). Rein
+    /// lokaler Input-State — nicht Teil von `Tile`, nicht serialisiert, nicht
+    /// netzwerksynchronisiert.
+    pub dir_history: Vec<(u64, Direction)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -269,22 +274,25 @@ impl WritingEngine {
         pace_decay(&mut self.pace);
         apply_trail_fade(&mut self.trail, visible_len_for_pace(self.pace));
 
-        // Keep dir_history back-aligned with the (possibly just-trimmed) trail:
-        // both grow newest-to-back, so trimming the front of the history by
-        // the same excess keeps `dir_history[i]` describing `trail[i]`.
-        let excess = self.dir_history.len().saturating_sub(self.trail.len());
-        if excess > 0 {
-            self.dir_history.drain(0..excess);
-        }
+        // dir_history exakt auf die überlebenden Trail-Tiles spiegeln. `apply_trail_fade`
+        // entfernt Tiles per individueller, pace-abhängiger Helligkeit — ein neueres Tile
+        // kann VOR einem älteren auf 0 fallen, also entstehen Löcher in der Trail-Mitte.
+        // Per Tick-Identität (statt Position) zu prunen ist gegen solche Löcher immun und
+        // hält die Historie beschränkt (== Trail-Länge).
+        let live: std::collections::HashSet<u64> = self.trail.iter().map(|t| t.tick).collect();
+        self.dir_history.retain(|(tk, _)| live.contains(tk));
     }
 
     pub fn on_char(&mut self, ch: char) -> StepResult {
         let is_boundary = ch.is_whitespace() || matches!(ch, '.' | ',' | '!' | '?' | ';' | ':');
 
         // Record the direction in effect WHEN this tile is written — i.e.
-        // before any turn this same char might trigger. Lets on_backspace
-        // restore the pre-turn direction when erasing back across a turn.
-        self.dir_history.push(self.direction);
+        // before any turn this same char might trigger. Keyed by this tile's
+        // `tick` (== `self.tick` here, since it's bumped only at the end of
+        // on_char), so the entry survives trail-fade holes by identity. Lets
+        // on_backspace restore the pre-turn direction when erasing back across
+        // a turn.
+        self.dir_history.push((self.tick, self.direction));
 
         pace_bump(&mut self.pace);
         let tile = Tile {
@@ -362,7 +370,11 @@ impl WritingEngine {
     pub fn on_backspace(&mut self) -> StepResult {
         if let Some(last) = self.trail.pop() {
             self.cursor = last.pos;
-            if let Some(d) = self.dir_history.pop() {
+            // History spiegelt die überlebenden Tiles in Reihenfolge (tick_visuals
+            // prunt per Tick), also gehört der letzte Eintrag zum gerade gepoppten
+            // (neuesten) Tile. Tick-Gleichheit dokumentiert die Invariante.
+            if let Some((tk, d)) = self.dir_history.pop() {
+                debug_assert_eq!(tk, last.tick, "dir_history desync gegenüber trail");
                 self.direction = d;
             }
             if !self.current_word.is_empty() {
@@ -1064,6 +1076,58 @@ mod tests {
         // history/trail stayed in lockstep (no panic, no desync).
         let _ = dir_before;
         assert!(e.dir_history.len() <= e.trail.len());
+    }
+
+    #[test]
+    fn backspace_direction_correct_after_mid_trail_fade_hole() {
+        // Regression: the pace-driven trail fade removes tiles by individual
+        // brightness, so a newer tile can vanish before an older one — leaving a
+        // HOLE in the trail's middle. A position-keyed history trim would desync
+        // here and silently restore the wrong direction. The tick-keyed mirror
+        // must stay correct.
+        let mut e = WritingEngine::new((0, 0));
+        // Drive writes through a sequence that turns mid-stream, capturing an
+        // INDEPENDENT ground truth (tick → direction-in-effect-at-write) so the
+        // assertions don't just mirror dir_history back onto itself.
+        let mut truth: std::collections::HashMap<u64, Direction> = std::collections::HashMap::new();
+        for ch in "xupydownz".chars() {
+            truth.insert(e.tick, e.direction); // tick & pre-write dir for this tile
+            e.on_char(ch);
+        }
+        // Sanity: the stream actually turned (else the test proves nothing).
+        let dirs: Vec<Direction> = truth.values().copied().collect();
+        assert!(
+            dirs.iter().any(|d| *d != dirs[0]),
+            "stream must change direction to be meaningful"
+        );
+
+        // Punch a hole: drop a middle tile, exactly what apply_trail_fade can do
+        // when a faster-faded newer tile outlives... err, predeceases an older one.
+        e.trail.retain(|t| t.tick != 4);
+        e.tick_visuals(); // prunes dir_history by the SURVIVING tick set (identity)
+
+        assert_eq!(
+            e.dir_history.len(),
+            e.trail.len(),
+            "history mirrors the surviving tiles after a hole"
+        );
+        // Every surviving history entry carries the CORRECT direction for its tick
+        // (immutable tick→dir pairing, preserved through identity pruning).
+        for (tk, d) in &e.dir_history {
+            assert_eq!(Some(d), truth.get(tk), "tick {tk} kept its true pre-write dir");
+        }
+
+        // Backspacing newest-first restores each surviving tile's ground-truth
+        // direction. A position-keyed trim would desync here and the on_backspace
+        // tick debug_assert would fire.
+        let mut surviving_ticks: Vec<u64> = e.trail.iter().map(|t| t.tick).collect();
+        while let Some(tk) = surviving_ticks.pop() {
+            e.on_backspace();
+            assert_eq!(
+                e.direction, truth[&tk],
+                "backspace over tick {tk} restored its ground-truth direction"
+            );
+        }
     }
 
     #[test]
