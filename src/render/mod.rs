@@ -214,6 +214,26 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
         anchor_rect(area, Anchor::BottomLeft, area.width.saturating_sub(10), 1),
     );
 
+    // Control-Hinweis — unten-rechts, eine Zeile über dem Quit-Hinweis
+    // (Stacking: Anker auf eine um die letzte Zeile verkürzte area, damit
+    // beide Zeilen unten-rechts übereinander landen statt sich zu überlappen).
+    // Glyphen in ACCENT ohne BOLD — bündig mit dem direkt darunter liegenden
+    // [Esc]-quit-Hinweis (gleiche Ecke), damit die Ecke einheitlich wirkt.
+    let controls = Line::from(vec![
+        Span::styled("Tab", Style::default().fg(theme::ACCENT)),
+        Span::styled(" cast · ", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled("`", Style::default().fg(theme::ACCENT)),
+        Span::styled(" inv", Style::default().fg(theme::TEXT_DIM)),
+    ]);
+    let controls_area = Rect {
+        height: area.height.saturating_sub(1),
+        ..area
+    };
+    f.render_widget(
+        Paragraph::new(controls),
+        anchor_rect(controls_area, Anchor::BottomRight, 22, 1),
+    );
+
     // Quit-Hinweis — unten-rechts
     let quit = Line::from(vec![
         Span::styled("[Esc]", Style::default().fg(theme::ACCENT)),
@@ -735,6 +755,9 @@ mod tests {
             "verbose Trigger-Hilfe noch da"
         );
         assert!(out.contains("Esc"), "Quit-Hinweis fehlt");
+        assert!(out.contains("Tab"), "Control-Hinweis (Tab cast) fehlt");
+        assert!(out.contains("cast"), "Control-Hinweis (cast) fehlt");
+        assert!(out.contains("inv"), "Control-Hinweis (inv) fehlt");
     }
 
     #[test]
