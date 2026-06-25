@@ -136,7 +136,6 @@ where
                     KeyCode::Esc => app.should_quit = true,
                     KeyCode::F(1) => app.toggle_debug(),
                     KeyCode::Tab => app.toggle_cast(),
-                    KeyCode::Char('`') => app.toggle_inventory(),
                     KeyCode::Char(c) => app.on_char(c),
                     KeyCode::Backspace => app.on_backspace(),
                     KeyCode::Enter => app.on_enter(),
