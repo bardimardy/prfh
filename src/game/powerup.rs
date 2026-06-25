@@ -129,7 +129,22 @@ impl PowerupWord {
         let cheb = (cursor.0 - entry.0).abs().max((cursor.1 - entry.1).abs());
         let dir_ok = self.len() <= 1 || dir_delta == self.run_direction();
         let char_ok = self.expected_char(0) == Some(ch.to_ascii_lowercase());
-        (cheb <= radius && dir_ok && char_ok).then_some(entry)
+        // Neu (#44): Snap ist reine QUER-Korrektur. Steht der Cursor schon auf der Lauf-Linie
+        // des Worts (Quer-Offset 0) und fährt richtig an, kein Snap — sonst ruckt er einen
+        // entlang der Achse. Off-Linie zieht weiterhin aufs Eintritts-Tile. 1-Buchstaben-Wörter
+        // haben keine Achse → nie "on line", Snap bleibt erlaubt.
+        let on_line = if self.len() <= 1 {
+            false
+        } else {
+            let run = self.run_direction();
+            let off = (cursor.0 - entry.0, cursor.1 - entry.1);
+            if run.0 != 0 {
+                off.1 == 0
+            } else {
+                off.0 == 0
+            }
+        };
+        (cheb <= radius && dir_ok && char_ok && !on_line).then_some(entry)
     }
 }
 
@@ -241,13 +256,20 @@ mod tests {
     }
 
     #[test]
-    fn entry_snap_exact_hit_is_noop() {
-        // Exakter Treffer → Snap-Ziel == aktuelle Position (no-op, heute-kompatibel).
+    fn entry_snap_on_line_at_entry_does_not_snap() {
+        // Cursor steht schon auf der Lauf-Linie (genau aufs Eintritts-Tile, Quer-Offset 0)
+        // und fährt richtig an → kein Snap. War ohnehin ein No-op (Ziel == Cursor); unter
+        // der reinen Quer-Korrektur-Regel ist es jetzt `None`.
         let w = word("dash", (3, 0), Axis::Horizontal, false);
-        assert_eq!(
-            w.entry_snap((3, 0), (1, 0), 'd', ENTRY_SNAP_RADIUS),
-            Some((3, 0))
-        );
+        assert_eq!(w.entry_snap((3, 0), (1, 0), 'd', ENTRY_SNAP_RADIUS), None);
+    }
+
+    #[test]
+    fn entry_snap_on_line_behind_does_not_snap() {
+        // Cursor auf derselben Reihe, ein Tile hinter dem Eintritt, richtige Richtung +
+        // Buchstabe → on-line, also kein Ruck entlang der Achse.
+        let w = word("dash", (3, 0), Axis::Horizontal, false);
+        assert_eq!(w.entry_snap((2, 0), (1, 0), 'd', ENTRY_SNAP_RADIUS), None);
     }
 
     #[test]
