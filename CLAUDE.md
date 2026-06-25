@@ -121,6 +121,11 @@ Trigger treffen kann.
   Code entfernen).
 - Schreib Code, der zum umgebenden Code passt (Naming, Kommentar-Dichte, Idiome).
 - Die Base-Mechanik lebt in `src/game/writing.rs`; Rendering in `src/render/`.
+- **`App::new()` vs. `App::new_single()`** (W3 #44): `new()` baut einen App mit
+  **leerer Arena** (für Tests, die einen sauberen Welt-Zustand brauchen); `new_single()`
+  seedet die Arena via `spawn_powerups` (regulärer Single-Player-Start, von `main.rs`
+  benutzt). **Nicht zu einem Alias zusammenziehen** — Render-/`w2`-Tests bauen auf der
+  leeren Arena auf und brechen, wenn `new()` plötzlich Powerups spawnt.
 - **Netz-/Welt-Sync** (host-autoritativ) lebt in `src/net/` + `src/game/arena.rs` (Sim-Welt)
   vs. `src/game/world.rs` (Render-`WorldView` — **nicht** umbenennen). **Bevor du das
   Protokoll anfasst** (neue `ServerMsg`-Variante/-Feld, `Welcome`-Snapshot, Broadcast):

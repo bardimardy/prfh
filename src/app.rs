@@ -7,6 +7,14 @@ use crate::hud::notify::{NotificationStack, NotifyKind};
 use crate::net::server::HostState;
 use std::time::Duration;
 
+/// Render-time-Pickup-Animation: Timer + Inventar-Slot der neuen Zeile (Design §3).
+pub struct PickupAnim {
+    pub age: Duration,
+    pub slot: usize,
+}
+
+pub const PICKUP_ANIM_DUR: Duration = Duration::from_millis(600);
+
 impl Default for App {
     fn default() -> Self {
         Self::new_single()
@@ -39,35 +47,17 @@ pub struct App {
     pub cast_wave: Option<Duration>,
     /// Monotone Animations-Uhr fürs render-time-Shimmer (vom Render getrieben).
     pub anim_clock: Duration,
+    /// Laufende Pickup-Animation (render-time); None = keine Anim aktiv.
+    pub pickup_anim: Option<PickupAnim>,
+    /// Inventar-Overlay sichtbar.
+    pub inv_visible: bool,
 }
 
 impl App {
-    /// Alias for `new_single` — used by render tests imported from main.
+    /// Leerer App-Zustand ohne vorgeseedete Arena — für Unit-/Render-Tests.
+    /// Produktions-Einstieg ist `new_single` (mit `spawn_powerups`).
     pub fn new() -> Self {
-        Self::new_single()
-    }
-
-    pub fn new_with_mode(mode: Mode) -> Self {
-        let mut a = App::new_single();
-        a.mode = mode;
-        a
-    }
-
-    pub fn new_single() -> Self {
-        let mut arena = Arena::new();
-        // Test-Powerup nur unter PRFH_DEBUG: validiert den ganzen Flow
-        // Pickup→Inventar→Cast→Dispatch. Entfernen via Follow-up-Issue.
-        if std::env::var("PRFH_DEBUG").is_ok() {
-            arena.spawn(
-                (3, 0),
-                EntityKind::PowerupWord(PowerupWord {
-                    name: "dash".into(),
-                    origin: (3, 0),
-                    axis: crate::game::powerup::Axis::Horizontal,
-                    reversed: false,
-                }),
-            );
-        }
+        let arena = Arena::new();
         Self {
             should_quit: false,
             mode: Mode::Single(WritingEngine::new((0, 0)), arena),
@@ -81,6 +71,37 @@ impl App {
             cast_buffer: String::new(),
             cast_wave: None,
             anim_clock: Duration::ZERO,
+            pickup_anim: None,
+            inv_visible: false,
+        }
+    }
+
+    pub fn new_with_mode(mode: Mode) -> Self {
+        let mut a = App::new_single();
+        a.mode = mode;
+        a
+    }
+
+    pub fn new_single() -> Self {
+        let mut arena = Arena::new();
+        // Echtes Spawn (Issue D): reguläre Start-Menge. Host-autoritativ; in MP
+        // seedet der Host, Clients erhalten die Wörter über EntitySpawned/Snapshot.
+        crate::game::powerup::spawn_powerups(&mut arena);
+        Self {
+            should_quit: false,
+            mode: Mode::Single(WritingEngine::new((0, 0)), arena),
+            last_event: String::from("type to write yourself a path"),
+            notifications: NotificationStack::new(),
+            debug: false,
+            debug_lines: Vec::new(),
+            inventory: Inventory::new(),
+            trace: Trace::new(),
+            cast_mode: false,
+            cast_buffer: String::new(),
+            cast_wave: None,
+            anim_clock: Duration::ZERO,
+            pickup_anim: None,
+            inv_visible: false,
         }
     }
 
@@ -161,10 +182,29 @@ impl App {
         }
     }
 
+    /// Ob das Inventar-Overlay sichtbar ist: automatisch sobald nicht leer, oder im
+    /// Cast-Modus (Auto-Pop, §8), oder manuell erzwungen. Buchstaben bewegen → kein
+    /// Buchstaben-Hotkey; manuelles Toggle liegt auf einer Nicht-Buchstaben-Taste.
+    pub fn inventory_open(&self) -> bool {
+        self.inv_visible || self.cast_mode || !self.inventory.is_empty()
+    }
+
+    /// Manuelles Ein-/Ausblenden des Inventar-Overlays (Nicht-Buchstaben-Taste).
+    pub fn toggle_inventory(&mut self) {
+        self.inv_visible = !self.inv_visible;
+    }
+
     /// Cast-Modus betreten/verlassen (Default-Taste `Tab`). Buffer wird geleert.
     pub fn toggle_cast(&mut self) {
         self.cast_mode = !self.cast_mode;
         self.cast_buffer.clear();
+    }
+
+    /// Debug-Overlay ein-/ausblenden (Default-Taste `F1`). Default: versteckt,
+    /// unabhängig von `PRFH_DEBUG` (der Env-Var steuert nur das Sammeln der
+    /// Log-Zeilen, nicht die Sichtbarkeit).
+    pub fn toggle_debug(&mut self) {
+        self.debug = !self.debug;
     }
 
     /// Zeichen im Cast-Modus: füllt den Buffer (schreibt KEIN Tile, bewegt den
@@ -181,14 +221,18 @@ impl App {
     /// Aktivierungs-Dispatch-Hook (Powerup-Spec §7): matcht `effect_tag`. Vorerst
     /// Log + Banner + render-time-Cast-Welle (echte Effekte wie Dash: später).
     fn dispatch_cast(&mut self, tag: EffectTag, name: &str) {
-        match tag {
+        match &tag {
             EffectTag::Test => {
                 self.notifications
                     .push(NotifyKind::Event, "⚡  CAST", name.to_string());
-                self.cast_wave = Some(Duration::ZERO);
                 self.debug_log(format!("cast dispatch: {name} ({tag:?})"));
             }
         }
+        // Aktivierungs-Welle über denselben EffectEvent-Seam wie der Pickup.
+        self.apply_effect_event(crate::game::powerup::EffectEvent::Activation {
+            tag,
+            name: name.to_string(),
+        });
     }
 
     /// Single-player local input. (Host/Client routing added in Task 9.)
@@ -200,6 +244,10 @@ impl App {
             self.on_cast_char(c);
             return;
         }
+        // Deferred EffectEvent: muss nach dem Ende des Arena-Borrows angewendet
+        // werden, da `apply_effect_event` `&mut self` benötigt.
+        let mut deferred_ev: Option<crate::game::powerup::EffectEvent> = None;
+
         if let Mode::Single(e, arena) = &mut self.mode {
             let dir = e.direction;
 
@@ -260,7 +308,11 @@ impl App {
                     name: name.clone(),
                     effect_tag: EffectTag::Test,
                 });
-                self.notifications.push(NotifyKind::Event, "✦  PICKUP", name);
+                self.notifications.push(NotifyKind::Event, "✦  PICKUP", name.clone());
+                // Host-autoritatives Event → lokale render-time-Pickup-Anim auf der
+                // gerade hinzugefügten Zeile (Design §3.1). Slot = letzter Index.
+                let slot = self.inventory.len() - 1;
+                deferred_ev = Some(crate::game::powerup::EffectEvent::Pickup { slot, name });
             } else {
                 // Bestehende Turn/Stop-Notifications nur, wenn kein Pickup lief.
                 match result {
@@ -276,6 +328,11 @@ impl App {
                 }
             }
         }
+
+        // Arena-Borrow ist beendet; jetzt sicher `&mut self` aufrufen.
+        if let Some(ev) = deferred_ev {
+            self.apply_effect_event(ev);
+        }
     }
 
     pub fn on_backspace(&mut self) {
@@ -286,6 +343,105 @@ impl App {
     }
 
     pub fn on_enter(&mut self) {}
+
+    /// Wendet ein host-autoritatives EffectEvent auf den lokalen Animations-State
+    /// an (Design §3.1). Pickup → render-time-Pickup-Anim auf der Slot-Zeile;
+    /// Activation → render-time-Cast-Welle.
+    pub fn apply_effect_event(&mut self, ev: crate::game::powerup::EffectEvent) {
+        use crate::game::powerup::EffectEvent;
+        match ev {
+            EffectEvent::Pickup { slot, .. } => {
+                self.pickup_anim = Some(PickupAnim { age: Duration::ZERO, slot });
+            }
+            EffectEvent::Activation { .. } => {
+                self.cast_wave = Some(Duration::ZERO);
+            }
+        }
+    }
+
+    /// Schreibt die Pickup-Animation fort und räumt sie nach `PICKUP_ANIM_DUR` ab.
+    /// Reine Funktion der Zeit (analog cast_wave) → unit-testbar.
+    pub fn advance_pickup_anim(&mut self, dt: Duration) {
+        if let Some(a) = self.pickup_anim.as_mut() {
+            a.age += dt;
+            if a.age >= PICKUP_ANIM_DUR {
+                self.pickup_anim = None;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod w3_tests {
+    use super::*;
+
+    #[test]
+    fn apply_pickup_event_starts_anim_on_slot() {
+        use crate::game::powerup::EffectEvent;
+        let mut app = App::new_single();
+        app.apply_effect_event(EffectEvent::Pickup { slot: 2, name: "warp".into() });
+        let a = app.pickup_anim.as_ref().expect("anim started");
+        assert_eq!(a.slot, 2);
+        assert_eq!(a.age, std::time::Duration::ZERO);
+    }
+
+    #[test]
+    fn apply_activation_event_fires_cast_wave() {
+        use crate::game::powerup::{EffectEvent, EffectTag};
+        let mut app = App::new_single();
+        app.apply_effect_event(EffectEvent::Activation { tag: EffectTag::Test, name: "dash".into() });
+        assert!(app.cast_wave.is_some());
+    }
+
+    #[test]
+    fn pickup_anim_advances_then_clears_after_duration() {
+        use crate::game::powerup::EffectEvent;
+        let mut app = App::new_single();
+        app.apply_effect_event(EffectEvent::Pickup { slot: 0, name: "dash".into() });
+        app.advance_pickup_anim(std::time::Duration::from_millis(100));
+        assert_eq!(app.pickup_anim.as_ref().unwrap().age, std::time::Duration::from_millis(100));
+        app.advance_pickup_anim(std::time::Duration::from_millis(600)); // über PICKUP_ANIM_DUR
+        assert!(app.pickup_anim.is_none(), "anim cleared after its duration");
+    }
+
+    #[test]
+    fn inventory_visibility_rules() {
+        let mut app = App::new_single();
+        assert!(!app.inventory_open(), "leer + kein cast + kein toggle → versteckt");
+        app.inventory.add(crate::game::powerup::Powerup {
+            id: 1,
+            name: "dash".into(),
+            effect_tag: crate::game::powerup::EffectTag::Test,
+        });
+        assert!(app.inventory_open(), "nicht leer → sichtbar");
+    }
+
+    #[test]
+    fn cast_mode_pops_inventory_even_when_empty() {
+        let mut app = App::new_single();
+        app.toggle_cast(); // Cast an
+        assert!(app.inventory_open(), "Cast-Modus poppt das Inventar");
+    }
+
+    #[test]
+    fn manual_toggle_forces_visibility_when_empty() {
+        let mut app = App::new_single();
+        assert!(!app.inventory_open());
+        app.toggle_inventory();
+        assert!(app.inventory_open(), "manuelles Toggle erzwingt Sichtbarkeit");
+        app.toggle_inventory();
+        assert!(!app.inventory_open());
+    }
+
+    #[test]
+    fn toggle_debug_flips_visibility() {
+        let mut app = App::new_single();
+        assert!(!app.debug, "Debug-Overlay startet versteckt");
+        app.toggle_debug();
+        assert!(app.debug, "F1 zeigt das Overlay");
+        app.toggle_debug();
+        assert!(!app.debug, "F1 erneut versteckt es wieder");
+    }
 }
 
 #[cfg(test)]
@@ -360,6 +516,19 @@ mod w2_tests {
         app.toggle_cast(); // off
         assert!(!app.cast_mode);
         assert!(app.cast_buffer.is_empty());
+    }
+
+    #[test]
+    fn completing_a_trace_starts_pickup_anim_on_the_new_slot() {
+        let mut app = App::new(); // kein spawn_powerups — saubere Arena
+        spawn_dash(&mut app); // legt "dash" bei (3,0) horizontal
+        // 3 Filler-Chars (xxx) bewegen den Cursor zu (3,0); dann armt+komplettiert "dash".
+        for c in "xxxdash".chars() {
+            app.on_char(c);
+        }
+        assert_eq!(app.inventory.len(), 1);
+        let a = app.pickup_anim.as_ref().expect("pickup anim fired");
+        assert_eq!(a.slot, 0, "slot == index der neuen (ersten) Inventar-Zeile");
     }
 
     #[test]
