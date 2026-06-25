@@ -107,7 +107,7 @@ where
     B::Error: std::error::Error + Send + Sync + 'static,
 {
     let mut app = App::new_single();
-    app.debug = debug;
+    app.debug = false;
     let mut last_draw = Instant::now();
 
     while !app.should_quit {
@@ -134,6 +134,7 @@ where
                 }
                 match key.code {
                     KeyCode::Esc => app.should_quit = true,
+                    KeyCode::F(1) => app.toggle_debug(),
                     KeyCode::Tab => app.toggle_cast(),
                     KeyCode::Char('`') => app.toggle_inventory(),
                     KeyCode::Char(c) => app.on_char(c),
@@ -154,7 +155,7 @@ fn run_client<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     addr: String,
     name: String,
-    debug: bool,
+    _debug: bool,
 ) -> Result<()>
 where
     B::Error: std::error::Error + Send + Sync + 'static,
@@ -169,7 +170,7 @@ where
     };
     let (world, arena, mut handle) = connect(&addr, &name)?;
     let mut app = App::new_with_mode(Mode::Client(world, arena));
-    app.debug = debug;
+    app.debug = false;
     let mut last_draw = Instant::now();
 
     while !app.should_quit {
@@ -190,6 +191,7 @@ where
                 if key.kind == KeyEventKind::Press {
                     match key.code {
                         KeyCode::Esc => app.should_quit = true,
+                        KeyCode::F(1) => app.toggle_debug(),
                         KeyCode::Char(' ') => {}
                         KeyCode::Char(c) if !self_is_dead => handle.send_input(InputEvent::Char(c)),
                         KeyCode::Backspace if !self_is_dead => {
@@ -233,7 +235,7 @@ where
 fn run_host<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     name: String,
-    debug: bool,
+    _debug: bool,
 ) -> Result<()>
 where
     B::Error: std::error::Error + Send + Sync + 'static,
@@ -254,7 +256,7 @@ where
     let mut conn_player: HashMap<u64, prfh::game::world::PlayerId> = HashMap::new();
 
     let mut app = App::new_with_mode(Mode::Host(HostState::new(name)));
-    app.debug = debug;
+    app.debug = false;
     let mut last_draw = Instant::now();
 
     while !app.should_quit {
@@ -266,7 +268,9 @@ where
         if event::poll(Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    if let Mode::Host(h) = &mut app.mode {
+                    if key.code == KeyCode::F(1) {
+                        app.toggle_debug();
+                    } else if let Mode::Host(h) = &mut app.mode {
                         let ev = match key.code {
                             KeyCode::Esc => {
                                 app.should_quit = true;

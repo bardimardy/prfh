@@ -200,6 +200,13 @@ impl App {
         self.cast_buffer.clear();
     }
 
+    /// Debug-Overlay ein-/ausblenden (Default-Taste `F1`). Default: versteckt,
+    /// unabhängig von `PRFH_DEBUG` (der Env-Var steuert nur das Sammeln der
+    /// Log-Zeilen, nicht die Sichtbarkeit).
+    pub fn toggle_debug(&mut self) {
+        self.debug = !self.debug;
+    }
+
     /// Zeichen im Cast-Modus: füllt den Buffer (schreibt KEIN Tile, bewegt den
     /// Cursor nicht). Bei exaktem Inventar-Namen → Dispatch + Modus verlassen.
     fn on_cast_char(&mut self, c: char) {
@@ -424,6 +431,16 @@ mod w3_tests {
         assert!(app.inventory_open(), "manuelles Toggle erzwingt Sichtbarkeit");
         app.toggle_inventory();
         assert!(!app.inventory_open());
+    }
+
+    #[test]
+    fn toggle_debug_flips_visibility() {
+        let mut app = App::new_single();
+        assert!(!app.debug, "Debug-Overlay startet versteckt");
+        app.toggle_debug();
+        assert!(app.debug, "F1 zeigt das Overlay");
+        app.toggle_debug();
+        assert!(!app.debug, "F1 erneut versteckt es wieder");
     }
 }
 
