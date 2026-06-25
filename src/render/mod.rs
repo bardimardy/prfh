@@ -46,32 +46,33 @@ pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
     let world = app.world_view();
     let clock = app.anim_clock;
     let cast_wave = app.cast_wave;
-    let cast_mode = app.cast_mode;
+    // Im Cast geschriebene Trail-Tiles (tick >= cast_start_tick) tinten der Render
+    // dezent blau; None außerhalb des Cast-Modus → No-Op-Pfad.
+    let cast_from = if app.cast_mode {
+        app.cast_start_tick
+    } else {
+        None
+    };
 
     let trace: Option<(u32, usize)> = match app.trace.state {
         TraceState::Tracing { id, progress } => Some((id, progress)),
         TraceState::Idle => None,
     };
 
-    draw_world(f, area, &world, app.arena(), clock, trace);
+    draw_world(f, area, &world, app.arena(), clock, trace, cast_from);
     draw_hud(f, area, app, &world);
 
     // Notifications oben-mitte, über der Welt (mutabel: halten ihre Effekte).
     app.notifications.render(f.buffer_mut(), area, elapsed);
 
-    // Cast-Buffer-Indikator + transparenter Rainbow-Ring (render-time, über der
-    // Welt; der Ring berührt nur seine Bande → Spielfeld bleibt sichtbar).
-    if cast_mode {
-        draw_cast_buffer(f, area, app);
-    }
+    // Transparenter Rainbow-Ring (render-time, über der Welt; der Ring berührt
+    // nur seine Bande → Spielfeld bleibt sichtbar).
     if let Some(age) = cast_wave {
         let center = ((area.width / 2) as i32, (area.height / 2) as i32);
         draw_cast_ring(f.buffer_mut(), center, age, area);
     }
 
-    if app.inventory_open() {
-        draw_inventory(f, area, app);
-    }
+    draw_inventory(f, area, app);
 
     let self_dead = world.players.iter().any(|p| p.is_self && p.is_dead);
     if self_dead {
@@ -173,7 +174,9 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
         anchor_rect(area, Anchor::TopLeft, 8, 1),
     );
 
-    // combo — oben-rechts
+    // combo — oben-rechts, aber LINKS neben dem jetzt immer sichtbaren Inventar-
+    // Panel (Breite INVENTORY_WIDTH): die area wird rechts um die Panel-Breite
+    // verkürzt, sonst überdeckt der Inventar-`Clear` die combo-Anzeige.
     let combo_line = Line::from(vec![
         Span::styled("combo ", Style::default().fg(theme::TEXT_DIM)),
         Span::styled(
@@ -183,9 +186,13 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
                 .add_modifier(Modifier::BOLD),
         ),
     ]);
+    let combo_area = Rect {
+        width: area.width.saturating_sub(INVENTORY_WIDTH),
+        ..area
+    };
     f.render_widget(
         Paragraph::new(combo_line),
-        anchor_rect(area, Anchor::TopRight, 12, 1),
+        anchor_rect(combo_area, Anchor::TopRight, 12, 1),
     );
 
     // Spielerliste — unten-links
@@ -214,34 +221,19 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
         anchor_rect(area, Anchor::BottomLeft, area.width.saturating_sub(10), 1),
     );
 
-    // Control-Hinweis — unten-rechts, eine Zeile über dem Quit-Hinweis
-    // (Stacking: Anker auf eine um die letzte Zeile verkürzte area, damit
-    // beide Zeilen unten-rechts übereinander landen statt sich zu überlappen).
-    // Glyphen in ACCENT ohne BOLD — bündig mit dem direkt darunter liegenden
-    // [Esc]-quit-Hinweis (gleiche Ecke), damit die Ecke einheitlich wirkt.
+    // Control- + Quit-Hinweis in EINER Zeile unten-rechts: `Tab` und `[Esc]` in
+    // ACCENT, der Rest gedämpft. „Tab cast" links vom „[Esc] quit"; das frühere
+    // „` inv" entfällt (Inventar ist jetzt immer sichtbar). Breite 21 = exakte
+    // Inhaltslänge.
     let controls = Line::from(vec![
         Span::styled("Tab", Style::default().fg(theme::ACCENT)),
         Span::styled(" cast · ", Style::default().fg(theme::TEXT_DIM)),
-        Span::styled("`", Style::default().fg(theme::ACCENT)),
-        Span::styled(" inv", Style::default().fg(theme::TEXT_DIM)),
-    ]);
-    let controls_area = Rect {
-        height: area.height.saturating_sub(1),
-        ..area
-    };
-    f.render_widget(
-        Paragraph::new(controls),
-        anchor_rect(controls_area, Anchor::BottomRight, 22, 1),
-    );
-
-    // Quit-Hinweis — unten-rechts
-    let quit = Line::from(vec![
         Span::styled("[Esc]", Style::default().fg(theme::ACCENT)),
         Span::styled(" quit", Style::default().fg(theme::TEXT_DIM)),
     ]);
     f.render_widget(
-        Paragraph::new(quit),
-        anchor_rect(area, Anchor::BottomRight, 10, 1),
+        Paragraph::new(controls),
+        anchor_rect(area, Anchor::BottomRight, 21, 1),
     );
 }
 
@@ -254,6 +246,7 @@ fn draw_world(
     arena: &Arena,
     clock: Duration,
     trace: Option<(u32, usize)>,
+    cast_from: Option<u64>,
 ) {
     let w = area.width as i32;
     let h = area.height as i32;
@@ -297,7 +290,22 @@ fn draw_world(
                 .bg(Color::DarkGray)
                 .add_modifier(Modifier::BOLD)
         } else if *is_self {
-            Style::default().fg(Color::Rgb(b as u8, b as u8, b as u8))
+            let gray = Color::Rgb(b as u8, b as u8, b as u8);
+            match cast_from {
+                Some(start) if tile.tick >= start => {
+                    // Cast-Tile (#44): dezent ACCENT-blau, brightness-scaled →
+                    // fügt sich in den Fade. Cast-Tiles glühen nie
+                    // (trace_suspended blockt Trigger) → kein Konflikt mit dem
+                    // glow-Branch oben.
+                    let scale = |c: u8| ((c as u64 * b) / max).min(255) as u8;
+                    if let Color::Rgb(r, g, bl) = theme::ACCENT {
+                        Style::default().fg(Color::Rgb(scale(r), scale(g), scale(bl)))
+                    } else {
+                        Style::default().fg(gray)
+                    }
+                }
+                _ => Style::default().fg(gray),
+            }
         } else {
             let scale = |c: u8| ((c as u64 * b) / max).min(255) as u8;
             Style::default().fg(Color::Rgb(scale(color.r), scale(color.g), scale(color.b)))
@@ -404,6 +412,11 @@ fn draw_world(
 /// Dauer der Cast-Ring-Animation (Sekunden) — snappy/dynamisch.
 const RING_DUR: f32 = 0.38;
 
+/// Breite des (immer sichtbaren) Inventar-Panels oben-rechts. Auch von `draw_hud`
+/// referenziert, damit die combo-Anzeige links daneben weicht statt verdeckt zu
+/// werden.
+const INVENTORY_WIDTH: u16 = 34;
+
 /// shimmer Idle-Style eines Powerup-Tiles: gray→white-Band, das übers Wort
 /// wandert. Reine Funktion aus `(t, index)` → scroll-immun (Skill `effects`,
 /// Learning #37): das Wort scrollt cursor-zentriert mit, ein tachyonfx-Zell-
@@ -489,45 +502,6 @@ fn draw_cast_ring(buf: &mut Buffer, center: (i32, i32), age: Duration, area: Rec
     }
 }
 
-/// Cast-Buffer-Indikator (Powerup-Spec §7): gematchter Prefix im Pink-Kasten,
-/// Rest gedämpft. Volles Inventar-Overlay-UI bleibt W3.
-fn draw_cast_buffer(f: &mut Frame, area: Rect, app: &App) {
-    let buf = &app.cast_buffer;
-    // Längster Prefix-Match bestimmt den hervorgehobenen Rest (Shadow-Suffix).
-    let suffix = app
-        .inventory
-        .prefix_matches(buf)
-        .first()
-        .map(|p| p.name[buf.len().min(p.name.len())..].to_string())
-        .unwrap_or_default();
-    let line = Line::from(vec![
-        Span::styled(
-            " cast ▸ ",
-            Style::default()
-                .fg(theme::ACCENT)
-                .bg(theme::PANEL_BG)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            buf.clone(),
-            Style::default()
-                .fg(theme::HIGHLIGHT_FG)
-                .bg(theme::HIGHLIGHT_BG)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(
-            suffix,
-            Style::default().fg(theme::TEXT_DIM).bg(theme::PANEL_BG),
-        ),
-        Span::styled(" ", Style::default().bg(theme::PANEL_BG)),
-    ]);
-    let rect = anchor_rect(area, Anchor::BottomCenter, 28, 1);
-    f.render_widget(
-        Paragraph::new(line).style(Style::default().bg(theme::PANEL_BG)),
-        rect,
-    );
-}
-
 /// Render-time pop-pulse Zeilen-Farbe für eine frisch eingesammelte Inventar-Zeile.
 ///
 /// Phase `p = age / PICKUP_ANIM_DUR`:
@@ -558,11 +532,10 @@ fn popup_pulse_line(name: &str, age: Duration) -> Line<'static> {
 /// Wächst dynamisch nach unten (1 Zeile pro Item). Liegt als Top-Overlay über
 /// Welt und HUD; `Clear` räumt die Welt darunter.
 fn draw_inventory(f: &mut Frame, area: Rect, app: &App) {
-    const WIDTH: u16 = 34;
     // §8: 1 Blank-Zeile über Items + 1 unter Items; +2 für den Rahmen.
     let item_count = app.inventory.items.len().max(1); // „— leer —" wenn leer
     let h = (item_count as u16 + 1 + 1 + 2).min(area.height); // items + 2×blank + 2×border
-    let rect = anchor_rect(area, Anchor::TopRight, WIDTH, h);
+    let rect = anchor_rect(area, Anchor::TopRight, INVENTORY_WIDTH, h);
 
     f.render_widget(Clear, rect);
 
@@ -757,7 +730,6 @@ mod tests {
         assert!(out.contains("Esc"), "Quit-Hinweis fehlt");
         assert!(out.contains("Tab"), "Control-Hinweis (Tab cast) fehlt");
         assert!(out.contains("cast"), "Control-Hinweis (cast) fehlt");
-        assert!(out.contains("inv"), "Control-Hinweis (inv) fehlt");
     }
 
     #[test]
@@ -966,20 +938,48 @@ mod tests {
     }
 
     #[test]
-    fn draw_inventory_renders_without_panic_when_open() {
+    fn draw_inventory_renders_without_panic() {
         let mut app = App::new_single();
         app.inventory.add(crate::game::powerup::Powerup {
             id: 1,
             name: "dash".into(),
             effect_tag: crate::game::powerup::EffectTag::Test,
         });
-        assert!(app.inventory_open());
         // Ganzer draw-Pfad darf nicht paniken (Inventar oben rechts, dynamische Höhe).
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         terminal
             .draw(|f| crate::render::draw(f, &mut app, std::time::Duration::from_millis(16)))
             .unwrap();
+    }
+
+    #[test]
+    fn inventory_always_visible_with_empty_state() {
+        // Inventar wird jetzt immer gezeichnet — auch leer zeigt es „— leer —".
+        let mut app = App::new(); // leeres Inventar
+        let out = render_to_string(&mut app);
+        assert!(out.contains("leer"), "leeres Inventar muss sichtbar sein");
+    }
+
+    #[test]
+    fn cast_tiles_tinted_blue_in_trail() {
+        // Ein im Cast geschriebenes Tile wird dezent ACCENT-blau getintet (fg).
+        // Frisch geschrieben = volle Helligkeit → fg ist EXAKT theme::ACCENT.
+        // Exakt-Match (statt nur „blau-dominant") grenzt sauber gegen das
+        // TEXT_DIM-'d' des HUD-„dir"-Labels ab, das zufällig auch blau-dominant
+        // wäre → der Test bewacht wirklich das Tinten, kein Fehl-Pass.
+        let mut app = App::new();
+        app.toggle_cast();
+        app.on_char('d');
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        let buf = terminal.backend().buffer();
+        let found = buf
+            .content()
+            .iter()
+            .any(|c| c.symbol() == "d" && c.fg == theme::ACCENT);
+        assert!(found, "Cast-Tile 'd' sollte exakt ACCENT-getintet sein");
     }
 
     #[test]

@@ -43,14 +43,15 @@ pub struct App {
     /// Cast-Modus aktiv (Tab-Toggle): Zeichen füllen den Buffer statt zu schreiben.
     pub cast_mode: bool,
     pub cast_buffer: String,
+    /// Engine-`tick` beim Cast-Eintritt — markiert die im Cast geschriebenen
+    /// Trail-Tiles fürs render-time-Tinten.
+    pub cast_start_tick: Option<u64>,
     /// Alter der laufenden Cast-Welle (render-time-Ring); None = keine Welle.
     pub cast_wave: Option<Duration>,
     /// Monotone Animations-Uhr fürs render-time-Shimmer (vom Render getrieben).
     pub anim_clock: Duration,
     /// Laufende Pickup-Animation (render-time); None = keine Anim aktiv.
     pub pickup_anim: Option<PickupAnim>,
-    /// Inventar-Overlay sichtbar.
-    pub inv_visible: bool,
 }
 
 impl App {
@@ -69,10 +70,10 @@ impl App {
             trace: Trace::new(),
             cast_mode: false,
             cast_buffer: String::new(),
+            cast_start_tick: None,
             cast_wave: None,
             anim_clock: Duration::ZERO,
             pickup_anim: None,
-            inv_visible: false,
         }
     }
 
@@ -98,10 +99,10 @@ impl App {
             trace: Trace::new(),
             cast_mode: false,
             cast_buffer: String::new(),
+            cast_start_tick: None,
             cast_wave: None,
             anim_clock: Duration::ZERO,
             pickup_anim: None,
-            inv_visible: false,
         }
     }
 
@@ -182,22 +183,17 @@ impl App {
         }
     }
 
-    /// Ob das Inventar-Overlay sichtbar ist: automatisch sobald nicht leer, oder im
-    /// Cast-Modus (Auto-Pop, §8), oder manuell erzwungen. Buchstaben bewegen → kein
-    /// Buchstaben-Hotkey; manuelles Toggle liegt auf einer Nicht-Buchstaben-Taste.
-    pub fn inventory_open(&self) -> bool {
-        self.inv_visible || self.cast_mode || !self.inventory.is_empty()
-    }
-
-    /// Manuelles Ein-/Ausblenden des Inventar-Overlays (Nicht-Buchstaben-Taste).
-    pub fn toggle_inventory(&mut self) {
-        self.inv_visible = !self.inv_visible;
-    }
-
-    /// Cast-Modus betreten/verlassen (Default-Taste `Tab`). Buffer wird geleert.
+    /// Cast-Modus betreten/verlassen (Default-Taste `Tab`). Buffer wird geleert;
+    /// `cast_start_tick` merkt sich beim Eintritt den Engine-`tick`, damit der
+    /// Render die im Cast geschriebenen Trail-Tiles tinten kann.
     pub fn toggle_cast(&mut self) {
         self.cast_mode = !self.cast_mode;
         self.cast_buffer.clear();
+        self.cast_start_tick = if self.cast_mode {
+            self.local_engine().map(|e| e.tick)
+        } else {
+            None
+        };
     }
 
     /// Debug-Overlay ein-/ausblenden (Default-Taste `F1`). Default: versteckt,
@@ -207,14 +203,21 @@ impl App {
         self.debug = !self.debug;
     }
 
-    /// Zeichen im Cast-Modus: füllt den Buffer (schreibt KEIN Tile, bewegt den
-    /// Cursor nicht). Bei exaktem Inventar-Namen → Dispatch + Modus verlassen.
+    /// Zeichen im Cast-Modus: lenkneutral ins Trail schreiben (kein Bewegungs-
+    /// Trigger, aber Tile + Cursor laufen wie beim normalen Schreiben — Cast
+    /// „passiert im Trail", #44). Bei exaktem Inventar-Namen → Dispatch + Modus
+    /// verlassen.
     fn on_cast_char(&mut self, c: char) {
+        if let Mode::Single(e, _) = &mut self.mode {
+            e.trace_suspended = true;
+            e.on_char(c);
+        }
         self.cast_buffer.push(c);
         if let Some(p) = self.inventory.get_exact(&self.cast_buffer).cloned() {
             self.dispatch_cast(p.effect_tag, &p.name);
             self.cast_mode = false;
             self.cast_buffer.clear();
+            self.cast_start_tick = None;
         }
     }
 
@@ -336,6 +339,9 @@ impl App {
     }
 
     pub fn on_backspace(&mut self) {
+        if self.cast_mode {
+            self.cast_buffer.pop();
+        }
         if let Mode::Single(e, _) = &mut self.mode {
             e.on_backspace();
             self.last_event = format!("walked back. doubt: {}", e.doubt);
@@ -405,35 +411,6 @@ mod w3_tests {
     }
 
     #[test]
-    fn inventory_visibility_rules() {
-        let mut app = App::new_single();
-        assert!(!app.inventory_open(), "leer + kein cast + kein toggle → versteckt");
-        app.inventory.add(crate::game::powerup::Powerup {
-            id: 1,
-            name: "dash".into(),
-            effect_tag: crate::game::powerup::EffectTag::Test,
-        });
-        assert!(app.inventory_open(), "nicht leer → sichtbar");
-    }
-
-    #[test]
-    fn cast_mode_pops_inventory_even_when_empty() {
-        let mut app = App::new_single();
-        app.toggle_cast(); // Cast an
-        assert!(app.inventory_open(), "Cast-Modus poppt das Inventar");
-    }
-
-    #[test]
-    fn manual_toggle_forces_visibility_when_empty() {
-        let mut app = App::new_single();
-        assert!(!app.inventory_open());
-        app.toggle_inventory();
-        assert!(app.inventory_open(), "manuelles Toggle erzwingt Sichtbarkeit");
-        app.toggle_inventory();
-        assert!(!app.inventory_open());
-    }
-
-    #[test]
     fn toggle_debug_flips_visibility() {
         let mut app = App::new_single();
         assert!(!app.debug, "Debug-Overlay startet versteckt");
@@ -493,19 +470,49 @@ mod w2_tests {
     }
 
     #[test]
-    fn cast_chars_do_not_write_tiles_or_move_cursor() {
-        let mut app = App::new();
+    fn cast_chars_write_into_trail_and_move_cursor() {
+        // Cast „passiert im Trail" (#44): Tile + Cursor laufen wie beim normalen
+        // Schreiben, aber lenkneutral (kein Bewegungs-Trigger).
+        use crate::game::writing::Direction;
+        let mut app = App::new(); // player at (0,0), Right
         app.toggle_cast();
-        let before = app.local_engine().unwrap().cursor;
         for ch in "abc".chars() {
             app.on_char(ch);
         }
-        assert_eq!(
-            app.local_engine().unwrap().cursor,
-            before,
-            "cast input must not move the cursor"
-        );
+        let e = app.local_engine().unwrap();
+        assert_eq!(e.cursor, (3, 0), "cast input advances the cursor");
+        assert_eq!(e.trail.len(), 3, "cast input writes trail tiles");
+        assert_eq!(e.direction, Direction::Right, "cast stays steering-neutral");
         assert_eq!(app.cast_buffer, "abc");
+    }
+
+    #[test]
+    fn cast_does_not_fire_movement_triggers() {
+        // „up" wäre normal ein Turn — im Cast lenkneutral (trace_suspended).
+        use crate::game::writing::Direction;
+        let mut app = App::new();
+        app.toggle_cast();
+        for ch in "up".chars() {
+            app.on_char(ch);
+        }
+        let e = app.local_engine().unwrap();
+        assert_eq!(e.direction, Direction::Right, "cast must not steer");
+        assert_eq!(e.trail.len(), 2);
+        assert_eq!(app.cast_buffer, "up");
+    }
+
+    #[test]
+    fn cast_backspace_corrects_buffer_and_trail() {
+        let mut app = App::new(); // leeres Inventar → kein Dispatch
+        app.toggle_cast();
+        for ch in "dax".chars() {
+            app.on_char(ch);
+        }
+        app.on_backspace();
+        assert_eq!(app.cast_buffer, "da");
+        let e = app.local_engine().unwrap();
+        assert_eq!(e.cursor, (2, 0), "backspace walks the cursor back one tile");
+        assert_eq!(e.trail.len(), 2, "backspace erases one trail tile");
     }
 
     #[test]
