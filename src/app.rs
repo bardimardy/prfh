@@ -208,6 +208,24 @@ impl App {
     /// „passiert im Trail", #44). Bei exaktem Inventar-Namen → Dispatch + Modus
     /// verlassen.
     fn on_cast_char(&mut self, c: char) {
+        // Auto-Abort: sobald `cast_buffer + c` kein Präfix mehr eines
+        // Inventar-Worts ist, ist kein exakter Match je wieder erreichbar
+        // (subsumiert „Buffer länger als längster Name"). Cast verlassen und das
+        // Zeichen normal durch `on_char` schicken — inkl. Bewegungs-Triggern, ein
+        // nahtloser Übergang zurück ins normale Schreiben. Leeres Inventar matcht
+        // nie → der erste Cast-Char droppt sofort zurück.
+        let mut candidate = self.cast_buffer.clone();
+        candidate.push(c);
+        if self.inventory.prefix_matches(&candidate).is_empty() {
+            self.cast_mode = false;
+            self.cast_buffer.clear();
+            self.cast_start_tick = None;
+            self.notifications
+                .push(NotifyKind::Info, "✗  no spell", candidate);
+            self.on_char(c);
+            return;
+        }
+
         if let Mode::Single(e, _) = &mut self.mode {
             e.trace_suspended = true;
             e.on_char(c);
@@ -427,6 +445,14 @@ mod w2_tests {
     use crate::game::arena::EntityKind;
     use crate::game::powerup::{Axis, EffectTag, PowerupWord};
 
+    fn add_inv(app: &mut App, name: &str) {
+        app.inventory.add(Powerup {
+            id: 0,
+            name: name.into(),
+            effect_tag: EffectTag::Test,
+        });
+    }
+
     fn spawn_dash(app: &mut App) {
         app.arena_mut().unwrap().spawn(
             (3, 0),
@@ -470,11 +496,55 @@ mod w2_tests {
     }
 
     #[test]
+    fn cast_aborts_when_prefix_no_longer_matches() {
+        // Inventar nur "dash". 'u' kann nie Präfix werden → Auto-Abort, und das
+        // 'u' läuft normal durch on_char; ein folgendes 'p' lässt dann "up" als
+        // Bewegungs-Trigger feuern (nahtloser Übergang in den Normalmodus).
+        use crate::game::writing::Direction;
+        let mut app = App::new();
+        add_inv(&mut app, "dash");
+        app.toggle_cast();
+        app.on_char('u'); // bricht Cast ab, schreibt 'u' normal
+        assert!(!app.cast_mode, "no possible prefix → cast aborts");
+        assert!(app.cast_buffer.is_empty());
+        app.on_char('p'); // "up" feuert jetzt regulär
+        assert_eq!(
+            app.local_engine().unwrap().direction,
+            Direction::Up,
+            "aborted char is processed normally, so triggers fire again"
+        );
+    }
+
+    #[test]
+    fn cast_with_empty_inventory_drops_on_first_char() {
+        // Leeres Inventar: prefix_matches ist immer leer → der erste Cast-Char
+        // droppt sofort zurück in den Normalmodus.
+        let mut app = App::new();
+        app.toggle_cast();
+        assert!(app.cast_mode);
+        app.on_char('d');
+        assert!(!app.cast_mode, "empty inventory → first cast char drops out");
+        assert!(app.cast_buffer.is_empty());
+    }
+
+    #[test]
+    fn cast_keeps_running_while_buffer_is_a_valid_prefix() {
+        let mut app = App::new();
+        add_inv(&mut app, "dash");
+        app.toggle_cast();
+        app.on_char('d');
+        app.on_char('a');
+        assert!(app.cast_mode, "valid prefix keeps cast mode alive");
+        assert_eq!(app.cast_buffer, "da");
+    }
+
+    #[test]
     fn cast_chars_write_into_trail_and_move_cursor() {
         // Cast „passiert im Trail" (#44): Tile + Cursor laufen wie beim normalen
         // Schreiben, aber lenkneutral (kein Bewegungs-Trigger).
         use crate::game::writing::Direction;
         let mut app = App::new(); // player at (0,0), Right
+        add_inv(&mut app, "abcde"); // "abc" bleibt Präfix → kein Auto-Abort
         app.toggle_cast();
         for ch in "abc".chars() {
             app.on_char(ch);
@@ -491,6 +561,7 @@ mod w2_tests {
         // „up" wäre normal ein Turn — im Cast lenkneutral (trace_suspended).
         use crate::game::writing::Direction;
         let mut app = App::new();
+        add_inv(&mut app, "upgrade"); // "up" bleibt Präfix → kein Auto-Abort
         app.toggle_cast();
         for ch in "up".chars() {
             app.on_char(ch);
@@ -503,7 +574,8 @@ mod w2_tests {
 
     #[test]
     fn cast_backspace_corrects_buffer_and_trail() {
-        let mut app = App::new(); // leeres Inventar → kein Dispatch
+        let mut app = App::new();
+        add_inv(&mut app, "daxyz"); // "dax" bleibt Präfix → kein Dispatch, kein Abort
         app.toggle_cast();
         for ch in "dax".chars() {
             app.on_char(ch);
@@ -518,6 +590,7 @@ mod w2_tests {
     #[test]
     fn toggle_cast_off_clears_buffer() {
         let mut app = App::new();
+        add_inv(&mut app, "dash"); // "d" bleibt Präfix → kein Auto-Abort
         app.toggle_cast();
         app.on_char('d');
         app.toggle_cast(); // off

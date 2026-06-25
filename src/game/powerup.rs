@@ -103,6 +103,23 @@ impl PowerupWord {
         self.keystroke_tile(0).unwrap_or(self.origin)
     }
 
+    /// Der an Tile-Position `pos` *dargestellte* Buchstabe dieses Worts, falls
+    /// `pos` eines seiner Tiles ist — sonst `None`. Spiegelt exakt die
+    /// reversed-Abbildung der Render-Schleife (`tiles()`-Index `i` →
+    /// `letters[n-1-i]` bei `reversed`, sonst `letters[i]`), inklusive
+    /// Original-Schreibweise. Erlaubt dem Cursor-Marker, den Buchstaben statt
+    /// des Richtungs-Pfeils zu zeigen, wenn er auf einem Wort-Tile sitzt.
+    pub fn char_at_tile(&self, pos: (i32, i32)) -> Option<char> {
+        let letters: Vec<char> = self.name.chars().collect();
+        self.tiles().iter().position(|t| *t == pos).map(|i| {
+            if self.reversed {
+                letters[letters.len() - 1 - i]
+            } else {
+                letters[i]
+            }
+        })
+    }
+
     /// Lauf-/Traversier-Richtung vom Eintritts-Tile ins Wort hinein
     /// (Keystroke 0 → Keystroke 1). Für 1-Buchstaben-Wörter `(0,0)`.
     pub fn run_direction(&self) -> (i32, i32) {
@@ -238,6 +255,31 @@ mod tests {
         assert_eq!(w.entry_tile(), (6, 0));
         assert_eq!(w.run_direction(), (-1, 0));
         assert_eq!(w.expected_char(0), Some('d'));
+    }
+
+    #[test]
+    fn char_at_tile_forward_maps_position_to_letter() {
+        // forward "dash" bei (3,0): p_0..p_3 zeigen d,a,s,h.
+        let w = word("dash", (3, 0), Axis::Horizontal, false);
+        assert_eq!(w.char_at_tile((3, 0)), Some('d'));
+        assert_eq!(w.char_at_tile((6, 0)), Some('h'));
+        assert_eq!(w.char_at_tile((7, 0)), None, "Nicht-Tile → None");
+    }
+
+    #[test]
+    fn char_at_tile_reversed_mirrors_render_mapping() {
+        // reversed "dash": Eintritt am hohen Ende (6,0)='d', Ursprung (3,0)='h'.
+        let w = word("dash", (3, 0), Axis::Horizontal, true);
+        assert_eq!(w.char_at_tile((6, 0)), Some('d'));
+        assert_eq!(w.char_at_tile((3, 0)), Some('h'));
+    }
+
+    #[test]
+    fn char_at_tile_keeps_original_case() {
+        // Anders als expected_char (lowercased) zeigt char_at_tile die
+        // dargestellte Schreibweise (wie die Render-Schleife).
+        let w = word("Dash", (0, 0), Axis::Horizontal, false);
+        assert_eq!(w.char_at_tile((0, 0)), Some('D'));
     }
 
     #[test]
