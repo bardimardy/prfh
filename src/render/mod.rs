@@ -373,6 +373,18 @@ fn draw_world(
             Direction::Left => '◀',
             Direction::Right => '▶',
         };
+        // Sitzt der eigene Cursor auf einem Powerup-Wort-Tile (und ist KEIN Trace
+        // aktiv — dann ist der Pfeil ohnehin unterdrückt), zeige den dort
+        // dargestellten Buchstaben statt des Pfeils: sonst verdeckt der Pfeil den
+        // ersten zu tippenden Buchstaben und man sieht nicht, was zu casten ist (#54).
+        let glyph = if player.is_self && trace.is_none() {
+            arena.entities.iter().find_map(|e| match &e.kind {
+                EntityKind::PowerupWord(pw) => pw.char_at_tile(player.cursor),
+            })
+        } else {
+            None
+        };
+        let arrow_ch = glyph.unwrap_or(arrow_ch);
         let style = if player.is_self {
             Style::default()
                 .fg(theme::HIGHLIGHT_FG)
@@ -969,6 +981,12 @@ mod tests {
         // TEXT_DIM-'d' des HUD-„dir"-Labels ab, das zufällig auch blau-dominant
         // wäre → der Test bewacht wirklich das Tinten, kein Fehl-Pass.
         let mut app = App::new();
+        // "dash" im Inventar → "d" bleibt gültiges Präfix, Cast bricht nicht ab.
+        app.inventory.add(crate::game::powerup::Powerup {
+            id: 0,
+            name: "dash".into(),
+            effect_tag: crate::game::powerup::EffectTag::Test,
+        });
         app.toggle_cast();
         app.on_char('d');
         let backend = TestBackend::new(80, 24);
@@ -980,6 +998,41 @@ mod tests {
             .iter()
             .any(|c| c.symbol() == "d" && c.fg == theme::ACCENT);
         assert!(found, "Cast-Tile 'd' sollte exakt ACCENT-getintet sein");
+    }
+
+    #[test]
+    fn cursor_on_word_tile_shows_letter_not_arrow() {
+        // Steht der eigene Cursor auf dem Eintritts-Tile eines Powerup-Worts,
+        // zeigt der Marker den Buchstaben im Cursor-Highlight (bg=ACCENT) statt
+        // des Richtungs-Pfeils — sonst sieht man nicht, was zu tippen ist (#54).
+        use crate::game::arena::EntityKind;
+        use crate::game::powerup::{Axis, PowerupWord};
+        let mut app = App::new(); // Cursor (0,0), Richtung Right, kein Trace
+        app.arena_mut().unwrap().spawn(
+            (0, 0),
+            EntityKind::PowerupWord(PowerupWord {
+                name: "dash".into(),
+                origin: (0, 0),
+                axis: Axis::Horizontal,
+                reversed: false,
+            }),
+        );
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        let buf = terminal.backend().buffer();
+        // Der Buchstabe 'd' wird im Cursor-Highlight (bg=ACCENT) gezeigt …
+        let letter_highlighted = buf
+            .content()
+            .iter()
+            .any(|c| c.symbol() == "d" && c.bg == theme::ACCENT);
+        assert!(
+            letter_highlighted,
+            "Eintritts-Buchstabe 'd' sollte im Cursor-Highlight stehen"
+        );
+        // … und der Richtungs-Pfeil taucht nirgends auf (er wurde ersetzt).
+        let arrow_present = buf.content().iter().any(|c| c.symbol() == "▶");
+        assert!(!arrow_present, "Pfeil sollte vom Buchstaben ersetzt sein");
     }
 
     #[test]
