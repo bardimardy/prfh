@@ -97,10 +97,20 @@ impl Reveal {
         match self {
             Reveal::Coalesce => fx::coalesce((ms, Interpolation::SineOut)),
             Reveal::SweepGlow => fx::parallel(&[
-                fx::sweep_in(Motion::LeftToRight, 10, 0, theme::PANEL_BG, (ms, Interpolation::SineOut)),
+                fx::sweep_in(
+                    Motion::LeftToRight,
+                    10,
+                    0,
+                    theme::PANEL_BG,
+                    (ms, Interpolation::SineOut),
+                ),
                 fx::hsl_shift(Some([0.0, 0.0, 35.0]), None, (ms, Interpolation::SineOut)),
             ]),
-            Reveal::Fade => fx::fade_from(theme::PANEL_BG, theme::PANEL_BG, (ms, Interpolation::SineOut)),
+            Reveal::Fade => fx::fade_from(
+                theme::PANEL_BG,
+                theme::PANEL_BG,
+                (ms, Interpolation::SineOut),
+            ),
         }
     }
 }
@@ -436,11 +446,74 @@ fn draw_ring(buf: &mut Buffer, cx: i32, cy: i32, age: Duration, area: Rect) {
             // Hell/pastellig: hohe Lightness, moderate Sättigung; Kern minimal heller.
             let col = hsl(hue, 0.55, 0.74 + 0.12 * intensity);
             let ch = if intensity > 0.66 { '•' } else { '·' }; // leicht, kein ●
-            // Nur fg + Glyph setzen — der Zell-Hintergrund (Spielfeld) bleibt.
+                                                               // Nur fg + Glyph setzen — der Zell-Hintergrund (Spielfeld) bleibt.
             if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
                 cell.set_char(ch).set_fg(col);
             }
         }
+    }
+}
+
+/// Zeichen-Vorrat für die „random chars"-Optik (Preview + Shuffle). Bewusst
+/// code-artig (Buchstaben, Ziffern, Symbole), damit der Strahl wie ein
+/// flackernder Code-Schweif liest.
+const DASH_GLYPHS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789{}[]<>/=+*&^%$#";
+
+/// Deterministischer „Zufalls"-Glyph aus einem Seed (kein rng nötig → stabil
+/// pro Frame-Bucket, reproduzierbar).
+fn rand_glyph(seed: u64) -> char {
+    let h = seed
+        .wrapping_mul(2_654_435_761)
+        .wrapping_add(0x9E37_79B9_7F4A_7C15);
+    DASH_GLYPHS[(h % DASH_GLYPHS.len() as u64) as usize] as char
+}
+
+/// Aspekt-normierte Schritt-Anzahl des Dash-Strahls für eine Richtung: vertikale
+/// Zellen zählen ~2× (2:1-Zellaspekt, wie `draw_ring`), damit ALLE 8 Richtungen
+/// visuell gleich weit reichen. Die Reichweite skaliert mit dem Stack-
+/// Multiplikator (`stack`) — der ×N-Identifier bestimmt die Länge des Dash.
+fn dash_steps(dir: (i32, i32), stack: u32) -> i32 {
+    let beam_reach = 14.0 + 10.0 * stack as f32; // länger pro Stack
+    let step_len = (((dir.0 * dir.0) + (2 * dir.1) * (2 * dir.1)) as f32)
+        .sqrt()
+        .max(1.0);
+    (beam_reach / step_len).round().max(1.0) as i32
+}
+
+/// Speed-Faktor aus dem Stack-Multiplikator: mehr Stacks → schnellerer Dash
+/// (kürzere Extend-/Settle-Zeiten).
+fn dash_speed(stack: u32) -> f32 {
+    1.0 + 0.3 * (stack.saturating_sub(1)) as f32
+}
+
+// Dash-Abschluss-Timeline (Sekunden, ab Bestätigung):
+const DASH_EXTEND: f32 = 0.12; // Kopf schießt base→tip (Trail-Erweiterung)
+const DASH_SETTLE_BASE: f32 = 0.28; // erstes Tile hört auf zu shuffeln + setzt sich
+const DASH_SETTLE_STAGGER: f32 = 0.05; // Versatz pro Tile (setzt sich base→tip)
+
+/// Laufende Dash-Abschluss-Sequenz (Szene 7): der eigene Trail wurde um `steps`
+/// Tiles mit festen Ziel-Buchstaben (`letters`) erweitert; diese shuffeln noch
+/// und setzen sich gestaffelt. Die Cast-Welle am Ziel (`wave`) startet ERST nach
+/// dem Settle — der Skill ist erst dann abgeschlossen.
+struct DashFire {
+    age: Duration,
+    dir: (i32, i32),
+    steps: i32,
+    speed: f32,             // Stack-Speed-Faktor (>1 = schneller)
+    letters: Vec<char>,     // feste Ziel-Buchstaben, Index 0 = Schritt 1
+    nonce: u64,             // variiert die Buchstaben/Shuffle pro Abschuss
+    wave: Option<Duration>, // Cast-Welle am Ziel; None bis Settle fertig
+}
+
+impl DashFire {
+    /// Extend-Dauer (Kopf base→tip), durch den Speed-Faktor beschleunigt.
+    fn extend_dur(&self) -> f32 {
+        DASH_EXTEND / self.speed
+    }
+
+    /// Zeitpunkt, zu dem das letzte Tile gesetzt ist (Skill-Abschluss).
+    fn settled_at(&self) -> f32 {
+        (DASH_SETTLE_BASE + self.steps as f32 * DASH_SETTLE_STAGGER) / self.speed
     }
 }
 
@@ -489,7 +562,7 @@ struct Notif {
     detail: String,
     accent: Color,
     age: Duration,
-    text_fx: Option<Effect>,  // tachyonfx-Reveal (hybrid/full-fx), lazy ab Text-Phase
+    text_fx: Option<Effect>, // tachyonfx-Reveal (hybrid/full-fx), lazy ab Text-Phase
     panel_fx: Option<Effect>, // tachyonfx expand-Panel (nur full-fx), lazy
     fx_inited: bool,
 }
@@ -744,6 +817,12 @@ struct State {
     shadow_style: ShadowStyle,
     shadow_len: usize, // getippte Prefix-Länge gegen "dash" (0..=4)
     inv_anchor: InvAnchor,
+    // Dash-Aim-Szene (Szene 7)
+    dash_dir: prfh::game::skill::Aim8,
+    dash_age: Duration,
+    dash_stack: u32,             // Multiplikator ×N: treibt Länge + Speed
+    dash_beam_style: u8,         // 0..=4, A/B der Strahl-Stile
+    dash_fire: Option<DashFire>, // läuft die Abschluss-Sequenz?
 }
 
 impl State {
@@ -776,7 +855,37 @@ impl State {
             shadow_style: ShadowStyle::BoxDim,
             shadow_len: 0,
             inv_anchor: InvAnchor::TopRight,
+            dash_dir: prfh::game::skill::Aim8::E,
+            dash_age: Duration::ZERO,
+            dash_stack: 1,
+            dash_beam_style: 0,
+            dash_fire: None,
         }
+    }
+
+    /// Dash bestätigen (Szene 7): erweitert den eigenen Trail um `steps` Tiles mit
+    /// festen, zufälligen Buchstaben und startet die Abschluss-Sequenz
+    /// (Shuffle→Settle→Cast am Ziel). `nonce` aus dem aktuellen `dash_age`, damit
+    /// jeder Abschuss andere Buchstaben zieht.
+    fn fire_dash(&mut self) {
+        if self.dash_fire.is_some() {
+            return;
+        }
+        let dir = self.dash_dir.delta();
+        let steps = dash_steps(dir, self.dash_stack);
+        let nonce = self.dash_age.as_nanos() as u64 | 1;
+        let letters = (1..=steps)
+            .map(|i| rand_glyph((i as u64).wrapping_mul(0x9E37_79B9) ^ nonce))
+            .collect();
+        self.dash_fire = Some(DashFire {
+            age: Duration::ZERO,
+            dir,
+            steps,
+            speed: dash_speed(self.dash_stack),
+            letters,
+            nonce,
+            wave: None,
+        });
     }
 
     /// Szene 6 betreten: Panel auf, sauberer Demo-Zustand (~2 Zeilen).
@@ -828,9 +937,19 @@ impl State {
         // Verschiedene Typen rotieren → man sieht gemischtes Stacking.
         const S: &[(Kind, &str, &str, Color)] = &[
             (Kind::Info, "⟹  TURNED", "Up", theme::ACCENT),
-            (Kind::Event, "✦  PICKUP", "dash ins Inventar", theme::PICKUP_BASE),
+            (
+                Kind::Event,
+                "✦  PICKUP",
+                "dash ins Inventar",
+                theme::PICKUP_BASE,
+            ),
             (Kind::Info, "⟹  STOP", "next char overwrites", theme::DANGER),
-            (Kind::Major, "✓  MERGED", "main is green", theme::HIGHLIGHT_BG),
+            (
+                Kind::Major,
+                "✓  MERGED",
+                "main is green",
+                theme::HIGHLIGHT_BG,
+            ),
             (Kind::Event, "⚡  COMBO x12", "saubere Kette", theme::ACCENT),
         ];
         let (kind, title, detail, accent) = S[self.seq % S.len()];
@@ -876,6 +995,21 @@ impl State {
             *age += dt;
             if age.as_secs_f32() > PICKUP_DUR {
                 self.pickup_anim = None;
+            }
+        }
+        // Dash-Aim-Szene: Preview-Uhr + Abschluss-Sequenz altern.
+        self.dash_age += dt;
+        if let Some(df) = self.dash_fire.as_mut() {
+            df.age += dt;
+            // Cast-Welle am Ziel ERST nach dem Settle starten (Skill-Abschluss).
+            if df.wave.is_none() && df.age.as_secs_f32() >= df.settled_at() {
+                df.wave = Some(Duration::ZERO);
+            }
+            if let Some(w) = df.wave.as_mut() {
+                *w += dt;
+                if w.as_secs_f32() > RING_DUR {
+                    self.dash_fire = None; // Sequenz fertig → zurück zur Preview
+                }
             }
         }
         // Sanfter Auto-Replay in der finalen Cast-Szene: ~1.3 s Pause zwischen
@@ -926,6 +1060,7 @@ fn main() -> io::Result<()> {
                             state.scene = 6;
                             state.enter_inventory_scene();
                         }
+                        KeyCode::Char('7') => state.scene = 7,
                         KeyCode::Char('g') => state.fire_pickup(),
                         KeyCode::Char('x') => state.clear_inventory(),
                         KeyCode::Char('j') => state.pickup_style = state.pickup_style.next(),
@@ -937,18 +1072,51 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('o') => state.word_axis = state.word_axis.next(),
                         KeyCode::Char('t') => state.advance_trace(),
                         KeyCode::Char('w') => state.fire_wave(),
-                        KeyCode::Char('s') => state.cast_style = state.cast_style.next(),
-                        KeyCode::Char('b') => state.cast_on = !state.cast_on,
+                        KeyCode::Char('s') => {
+                            if state.scene == 7 {
+                                state.dash_beam_style = (state.dash_beam_style + 1) % 5;
+                            } else {
+                                state.cast_style = state.cast_style.next();
+                            }
+                        }
+                        KeyCode::Char('b') if state.scene != 7 => {
+                            state.cast_on = !state.cast_on;
+                        }
                         KeyCode::Char('n') => state.fire(),
                         KeyCode::Char('m') => state.mode = state.mode.next(),
                         KeyCode::Char('i') => state.reveal = state.reveal.next(),
                         KeyCode::Char('c') => state.cursor = state.cursor.next(),
                         KeyCode::Char('v') => state.toggle_inventory(),
                         KeyCode::Char('f') => state.frames = !state.frames,
-                        KeyCode::Up => state.dir = '↑',
-                        KeyCode::Down => state.dir = '↓',
-                        KeyCode::Left => state.dir = '←',
-                        KeyCode::Right => state.dir = '→',
+                        KeyCode::Up => {
+                            if state.scene == 7 {
+                                state.dash_stack = (state.dash_stack + 1).min(5);
+                            } else {
+                                state.dir = '↑';
+                            }
+                        }
+                        KeyCode::Down => {
+                            if state.scene == 7 {
+                                state.dash_stack = state.dash_stack.saturating_sub(1).max(1);
+                            } else {
+                                state.dir = '↓';
+                            }
+                        }
+                        KeyCode::Left => {
+                            if state.scene == 7 {
+                                state.dash_dir = state.dash_dir.rotate(false);
+                            } else {
+                                state.dir = '←';
+                            }
+                        }
+                        KeyCode::Right => {
+                            if state.scene == 7 {
+                                state.dash_dir = state.dash_dir.rotate(true);
+                            } else {
+                                state.dir = '→';
+                            }
+                        }
+                        KeyCode::Enter if state.scene == 7 => state.fire_dash(),
                         _ => {}
                     }
                 }
@@ -971,6 +1139,7 @@ fn ui(f: &mut Frame, state: &mut State, dt: Duration) {
         4 => layout_powerup(f, area, state, dt),
         5 => layout_gallery(f, area, state),
         6 => {} // Inventar-Lab: nur Welt-BG + Overlay + Hilfe (Panel via inv_open)
+        7 => layout_dash_aim(f, area, state),
         _ => layout_corners(f, area, state),
     }
     draw_notifications(f, area, state, dt);
@@ -1021,7 +1190,12 @@ fn draw_one(
         ((full_w as f32 * factor).round() as u16).clamp(1, full_w)
     };
     let x = area.left() + area.width.saturating_sub(w) / 2;
-    let rect = Rect { x, y: top, width: w, height: h };
+    let rect = Rect {
+        x,
+        y: top,
+        width: w,
+        height: h,
+    };
 
     // Panel-Hintergrund.
     paint_panel(f.buffer_mut(), rect);
@@ -1040,7 +1214,16 @@ fn draw_one(
             ));
         }
         if let Some(e) = n.panel_fx.as_mut() {
-            e.process(dt.into(), f.buffer_mut(), Rect { x: area.left() + area.width.saturating_sub(full_w) / 2, y: top, width: full_w, height: h });
+            e.process(
+                dt.into(),
+                f.buffer_mut(),
+                Rect {
+                    x: area.left() + area.width.saturating_sub(full_w) / 2,
+                    y: top,
+                    width: full_w,
+                    height: h,
+                },
+            );
         }
         return; // während Aufbau noch kein Text
     }
@@ -1092,24 +1275,49 @@ fn render_text(buf: &mut Buffer, rect: Rect, n: &Notif, alpha: f32) {
         let line = Line::from(vec![
             Span::styled(
                 format!("{} ", n.title),
-                Style::default().fg(title_fg).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(title_fg)
+                    .bg(theme::PANEL_BG)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(n.detail.clone(), Style::default().fg(detail_fg).bg(theme::PANEL_BG)),
+            Span::styled(
+                n.detail.clone(),
+                Style::default().fg(detail_fg).bg(theme::PANEL_BG),
+            ),
         ]);
-        Paragraph::new(line).alignment(Alignment::Center).render(rect, buf);
+        Paragraph::new(line)
+            .alignment(Alignment::Center)
+            .render(rect, buf);
     } else {
         Paragraph::new(Span::styled(
             n.title.clone(),
-            Style::default().fg(title_fg).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(title_fg)
+                .bg(theme::PANEL_BG)
+                .add_modifier(Modifier::BOLD),
         ))
         .alignment(Alignment::Center)
-        .render(Rect { y: rect.y, height: 1, ..rect }, buf);
+        .render(
+            Rect {
+                y: rect.y,
+                height: 1,
+                ..rect
+            },
+            buf,
+        );
         Paragraph::new(Span::styled(
             n.detail.clone(),
             Style::default().fg(detail_fg).bg(theme::PANEL_BG),
         ))
         .alignment(Alignment::Center)
-        .render(Rect { y: rect.y + 1, height: 1, ..rect }, buf);
+        .render(
+            Rect {
+                y: rect.y + 1,
+                height: 1,
+                ..rect
+            },
+            buf,
+        );
     }
 }
 
@@ -1140,8 +1348,20 @@ fn draw_world_bg(buf: &mut Buffer, area: Rect, frame: u64) {
 }
 
 fn layout_corners(f: &mut Frame, area: Rect, state: &State) {
-    chip(f, anchor_rect(area, Anchor::TopLeft, 9, 1), "dir", &state.dir.to_string(), state.frames);
-    chip(f, anchor_rect(area, Anchor::TopRight, 12, 1), "combo", &format!("x{}", state.combo), state.frames);
+    chip(
+        f,
+        anchor_rect(area, Anchor::TopLeft, 9, 1),
+        "dir",
+        &state.dir.to_string(),
+        state.frames,
+    );
+    chip(
+        f,
+        anchor_rect(area, Anchor::TopRight, 12, 1),
+        "combo",
+        &format!("x{}", state.combo),
+        state.frames,
+    );
     cursor_marker(f, area, state.dir, state.cursor, state.frame);
     players_strip(f, anchor_rect(area, Anchor::BottomLeft, 30, 1));
 }
@@ -1150,13 +1370,31 @@ fn layout_bottom_strip(f: &mut Frame, area: Rect, state: &State) {
     let rect = anchor_rect(area, Anchor::BottomCenter, area.width.min(60), 1);
     let line = Line::from(vec![
         Span::styled(" dir ", Style::default().fg(theme::TEXT_DIM)),
-        Span::styled(format!("{} ", state.dir), Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("{} ", state.dir),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("  combo ", Style::default().fg(theme::TEXT_DIM)),
-        Span::styled(format!("x{} ", state.combo), Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD)),
-        Span::styled("  you", Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("x{} ", state.combo),
+            Style::default()
+                .fg(theme::TEXT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "  you",
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("(du) rival ", Style::default().fg(theme::TEXT_DIM)),
     ]);
-    f.render_widget(Paragraph::new(line).style(Style::default().bg(theme::PANEL_BG)), rect);
+    f.render_widget(
+        Paragraph::new(line).style(Style::default().bg(theme::PANEL_BG)),
+        rect,
+    );
     cursor_marker(f, area, state.dir, state.cursor, state.frame);
 }
 
@@ -1165,14 +1403,25 @@ fn layout_diegetic(f: &mut Frame, area: Rect, state: &State) {
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             format!(" {} ", state.dir),
-            Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Black)
+                .bg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
         )])),
         c,
     );
     if state.combo > 1 {
         f.render_widget(
-            Paragraph::new(Span::styled(format!("x{}", state.combo), Style::default().fg(theme::TEXT_DIM))),
-            Rect { x: area.left() + area.width / 2 - 3, y: area.bottom().saturating_sub(1), width: 6, height: 1 },
+            Paragraph::new(Span::styled(
+                format!("x{}", state.combo),
+                Style::default().fg(theme::TEXT_DIM),
+            )),
+            Rect {
+                x: area.left() + area.width / 2 - 3,
+                y: area.bottom().saturating_sub(1),
+                width: 6,
+                height: 1,
+            },
         );
     }
 }
@@ -1319,7 +1568,10 @@ fn draw_cast_buffer(f: &mut Frame, area: Rect) {
                 .bg(theme::HIGHLIGHT_BG)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(rest, Style::default().fg(theme::TEXT_DIM).bg(theme::PANEL_BG)),
+        Span::styled(
+            rest,
+            Style::default().fg(theme::TEXT_DIM).bg(theme::PANEL_BG),
+        ),
         Span::styled(" ", Style::default().bg(theme::PANEL_BG)),
     ]);
     f.render_widget(
@@ -1438,7 +1690,9 @@ fn cursor_marker(f: &mut Frame, area: Rect, dir: char, style: CursorStyle, frame
 
 fn chip(f: &mut Frame, rect: Rect, key: &str, val: &str, frames: bool) {
     let inner = if frames {
-        let b = Block::default().borders(Borders::ALL).style(Style::default().fg(theme::TEXT_DIM));
+        let b = Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(theme::TEXT_DIM));
         let inner = b.inner(rect);
         f.render_widget(b, rect);
         inner
@@ -1447,16 +1701,31 @@ fn chip(f: &mut Frame, rect: Rect, key: &str, val: &str, frames: bool) {
     };
     let line = Line::from(vec![
         Span::styled(format!("{key} "), Style::default().fg(theme::TEXT_DIM)),
-        Span::styled(val.to_string(), Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            val.to_string(),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
     ]);
     f.render_widget(Paragraph::new(line), inner);
 }
 
 fn players_strip(f: &mut Frame, rect: Rect) {
     let line = Line::from(vec![
-        Span::styled("you", Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "you",
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("(du) ", Style::default().fg(theme::TEXT_DIM)),
-        Span::styled("rival ", Style::default().fg(Color::Rgb(0x8A, 0xE2, 0x34)).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "rival ",
+            Style::default()
+                .fg(Color::Rgb(0x8A, 0xE2, 0x34))
+                .add_modifier(Modifier::BOLD),
+        ),
     ]);
     f.render_widget(Paragraph::new(line), rect);
 }
@@ -1511,7 +1780,10 @@ fn rule_line(w: u16) -> Line<'static> {
 
 fn push_desc(spans: &mut Vec<Span<'static>>, desc: &str, fg: Color, bg: Color, show: bool) {
     if show {
-        spans.push(Span::styled(desc.to_string(), Style::default().fg(fg).bg(bg)));
+        spans.push(Span::styled(
+            desc.to_string(),
+            Style::default().fg(fg).bg(bg),
+        ));
     }
 }
 
@@ -1549,7 +1821,13 @@ fn inv_row(
                 Style::default().fg(theme::TEXT).bg(theme::PANEL_BG),
             ),
         ];
-        push_desc(&mut spans, desc, theme::TEXT_DIM, theme::PANEL_BG, show_desc);
+        push_desc(
+            &mut spans,
+            desc,
+            theme::TEXT_DIM,
+            theme::PANEL_BG,
+            show_desc,
+        );
         return Line::from(spans);
     }
     let dim = shadow_active && matches!(state.shadow_style, ShadowStyle::BoxDim);
@@ -1561,9 +1839,18 @@ fn inv_row(
     };
     let mut spans = vec![Span::styled(
         format!(" {name:<8}"),
-        Style::default().fg(name_fg).bg(theme::PANEL_BG).add_modifier(modi),
+        Style::default()
+            .fg(name_fg)
+            .bg(theme::PANEL_BG)
+            .add_modifier(modi),
     )];
-    push_desc(&mut spans, desc, theme::TEXT_DIM, theme::PANEL_BG, show_desc);
+    push_desc(
+        &mut spans,
+        desc,
+        theme::TEXT_DIM,
+        theme::PANEL_BG,
+        show_desc,
+    );
     Line::from(spans)
 }
 
@@ -1586,7 +1873,10 @@ fn animated_pickup_line(
             let pad = " ".repeat(((1.0 - p) * 10.0).round() as usize);
             spans.push(Span::styled(
                 format!("{pad} {name:<8}"),
-                Style::default().fg(fg).bg(panel).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(fg)
+                    .bg(panel)
+                    .add_modifier(Modifier::BOLD),
             ));
             push_desc(&mut spans, desc, fg, panel, show_desc);
         }
@@ -1608,7 +1898,10 @@ fn animated_pickup_line(
             let f = blend(panel, fg, p.max(0.15));
             spans.push(Span::styled(
                 format!(" {name:<8}"),
-                Style::default().fg(f).bg(panel).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(f)
+                    .bg(panel)
+                    .add_modifier(Modifier::BOLD),
             ));
             push_desc(&mut spans, desc, f, panel, show_desc);
         }
@@ -1618,7 +1911,10 @@ fn animated_pickup_line(
             let shown: String = name.chars().take(k).collect();
             spans.push(Span::styled(
                 format!(" {shown}"),
-                Style::default().fg(fg).bg(panel).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(fg)
+                    .bg(panel)
+                    .add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::styled(
                 " ".repeat(8usize.saturating_sub(k)),
@@ -1647,7 +1943,10 @@ fn animated_pickup_line(
                 .collect();
             spans.push(Span::styled(
                 format!(" {s:<8}"),
-                Style::default().fg(fg).bg(panel).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(fg)
+                    .bg(panel)
+                    .add_modifier(Modifier::BOLD),
             ));
             push_desc(&mut spans, desc, fg, panel, show_desc);
         }
@@ -1660,7 +1959,13 @@ fn animated_pickup_line(
                 format!(" {name:<8}"),
                 Style::default().fg(f).bg(bg).add_modifier(Modifier::BOLD),
             ));
-            push_desc(&mut spans, desc, blend(theme::TEXT_DIM, theme::TEXT, flash), bg, show_desc);
+            push_desc(
+                &mut spans,
+                desc,
+                blend(theme::TEXT_DIM, theme::TEXT, flash),
+                bg,
+                show_desc,
+            );
         }
         PickupStyle::BarWipe => {
             // ACCENT-Balken wischt von links weg und gibt den Namen frei.
@@ -1671,9 +1976,15 @@ fn animated_pickup_line(
             let bar = "█".repeat(total - revealed);
             spans.push(Span::styled(
                 format!(" {shown}"),
-                Style::default().fg(theme::TEXT).bg(panel).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::TEXT)
+                    .bg(panel)
+                    .add_modifier(Modifier::BOLD),
             ));
-            spans.push(Span::styled(bar, Style::default().fg(theme::ACCENT).bg(panel)));
+            spans.push(Span::styled(
+                bar,
+                Style::default().fg(theme::ACCENT).bg(panel),
+            ));
             push_desc(&mut spans, desc, theme::TEXT_DIM, panel, show_desc);
         }
         PickupStyle::DoublePulse => {
@@ -1683,7 +1994,10 @@ fn animated_pickup_line(
             let f = blend(theme::TEXT, theme::PICKUP_BASE, pulse);
             spans.push(Span::styled(
                 format!(" {name:<8}"),
-                Style::default().fg(f).bg(panel).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(f)
+                    .bg(panel)
+                    .add_modifier(Modifier::BOLD),
             ));
             push_desc(&mut spans, desc, theme::TEXT_DIM, panel, show_desc);
         }
@@ -1701,7 +2015,13 @@ fn animated_pickup_line(
                 format!(" {name:<8}"),
                 Style::default().fg(f).bg(bg).add_modifier(Modifier::BOLD),
             ));
-            push_desc(&mut spans, desc, blend(theme::TEXT_DIM, theme::TEXT, flash), bg, show_desc);
+            push_desc(
+                &mut spans,
+                desc,
+                blend(theme::TEXT_DIM, theme::TEXT, flash),
+                bg,
+                show_desc,
+            );
         }
     }
     Line::from(spans)
@@ -1734,7 +2054,11 @@ fn item_lines(state: &State, show_desc: bool) -> Vec<Line<'static>> {
 fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
     let skin = state.inv_skin;
     let show_desc = !matches!(skin, InvSkin::Compact);
-    let width: u16 = if matches!(skin, InvSkin::Compact) { 24 } else { 42 };
+    let width: u16 = if matches!(skin, InvSkin::Compact) {
+        24
+    } else {
+        42
+    };
     let inner_w = width.saturating_sub(2);
     let bordered = matches!(
         skin,
@@ -1763,14 +2087,18 @@ fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
                 content.push(blank_line());
                 content.push(Line::from(Span::styled(
                     "  POWERUPS",
-                    Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme::ACCENT)
+                        .add_modifier(Modifier::BOLD),
                 )));
                 content.push(blank_line());
             }
             InvSkin::Minimal => {
                 content.push(Line::from(Span::styled(
                     "  POWERUPS",
-                    Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme::ACCENT)
+                        .add_modifier(Modifier::BOLD),
                 )));
                 content.push(rule_line(inner_w));
             }
@@ -1817,7 +2145,9 @@ fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
             .style(Style::default().bg(theme::PANEL_BG))
             .title(Span::styled(
                 title,
-                Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
             ));
         let inner = block.inner(rect);
         f.render_widget(block, rect);
@@ -1831,7 +2161,9 @@ fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
         if matches!(skin, InvSkin::LeftBar) {
             for y in rect.top()..rect.bottom() {
                 if let Some(c) = f.buffer_mut().cell_mut((rect.left(), y)) {
-                    c.set_char('█').set_fg(theme::ACCENT).set_bg(theme::PANEL_BG);
+                    c.set_char('█')
+                        .set_fg(theme::ACCENT)
+                        .set_bg(theme::PANEL_BG);
                 }
             }
             Rect {
@@ -1850,6 +2182,191 @@ fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
         para_rect,
     );
     state.inv_effect.process(dt.into(), f.buffer_mut(), rect);
+}
+
+/// Szene 7 — Dash-Aim: 8-Richtungs-Rotation (◄ ►), Stack-Multiplikator ×N (▲ ▼,
+/// treibt Länge + Speed) und 5 Vorschau-Strahl-Stile (s). Enter spielt die volle
+/// Abschluss-Sequenz: Trail-Erweiterung mit festen Buchstaben → Shuffle → Settle →
+/// Cast-Welle am Ziel. Die Kamera ist FEST — so ist die Sequenz als Demo sichtbar.
+fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
+    use ratatui::style::Color;
+    let buf = f.buffer_mut();
+    let center = (
+        area.left() as i32 + area.width as i32 / 3,
+        area.top() as i32 + area.height as i32 / 2,
+    );
+    let (dx, dy) = state.dash_dir.delta();
+    // Aspekt-normierte Schritt-Anzahl (alle 8 Richtungen gleich weit, s. dash_steps);
+    // Länge skaliert mit dem Stack-Multiplikator.
+    let steps = dash_steps((dx, dy), state.dash_stack);
+    let t = state.dash_age.as_secs_f32();
+    let in_bounds = |x: i32, y: i32| {
+        x >= area.left() as i32
+            && x < area.right() as i32
+            && y >= area.top() as i32
+            && y < area.bottom() as i32
+    };
+
+    // Vorschau-Strahl (5 Stile per `s`).
+    if state.dash_fire.is_none() {
+        for i in 1..=steps {
+            let x = center.0 + dx * i;
+            let y = center.1 + dy * i;
+            if !in_bounds(x, y) {
+                continue;
+            }
+            // Fortschritt 0..1 entlang des Strahls — richtungs-unabhängig, da `steps`
+            // pro Richtung normiert ist.
+            let f = i as f32 / steps as f32;
+            let pulse = 0.5 + 0.5 * (f * 4.0 - t * 6.0).sin();
+            let last = i == steps;
+            let (ch, col) = match state.dash_beam_style {
+                0 => {
+                    // Flowing Gradient Pulse
+                    let hue = 200.0 + f * 50.0 + t * 60.0;
+                    let l = 0.45 + 0.35 * pulse;
+                    (
+                        if last {
+                            '◎'
+                        } else if dy == 0 {
+                            '─'
+                        } else if dx == 0 {
+                            '│'
+                        } else {
+                            '·'
+                        },
+                        hsl(hue, 0.55, if last { 0.8 } else { l }),
+                    )
+                }
+                1 => {
+                    // Charging Sweep: heller Kopf wandert
+                    let head = ((t * 8.0) as i32 % steps) + 1;
+                    let bright = if i == head { 1.0 } else { 0.25 };
+                    ('=', hsl(190.0, 0.5, 0.35 + 0.5 * bright))
+                }
+                2 => {
+                    // Shimmer/Laser: stabil + Funkeln
+                    let hsh = (x as u64)
+                        .wrapping_mul(2_654_435_761)
+                        .wrapping_add(state.dash_age.as_millis() as u64);
+                    let spark = (hsh % 7) < 1;
+                    (
+                        if last { '◎' } else { '─' },
+                        hsl(330.0, 0.5, if spark { 0.9 } else { 0.5 }),
+                    )
+                }
+                3 => {
+                    // Volle, unterschiedlich shaded Blöcke: ein nach außen fließender
+                    // Gradient (leicht animiert). Block-Glyph nach Wellen-Intensität,
+                    // Farbe als Hue-Verlauf entlang des Strahls.
+                    let wave = 0.5 + 0.5 * (f * 5.0 - t * 4.0).sin();
+                    let block = if wave > 0.72 {
+                        '█'
+                    } else if wave > 0.48 {
+                        '▓'
+                    } else if wave > 0.24 {
+                        '▒'
+                    } else {
+                        '░'
+                    };
+                    let hue = 265.0 + f * 70.0 + t * 25.0;
+                    (
+                        if last { '█' } else { block },
+                        hsl(hue, 0.6, 0.35 + 0.45 * wave),
+                    )
+                }
+                _ => {
+                    // Random Chars: flackernder Code-Schweif aus zufälligen Zeichen +
+                    // dezenter Farb-Animation → liest sich klar als unverbindliche
+                    // Vorschau (genau die Optik, in die sich der gesetzte Trail
+                    // nachher „einfriert"). Langsamer Shuffle-Bucket.
+                    let bucket = (t * 12.0) as u64;
+                    let glyph = rand_glyph((i as u64).wrapping_mul(2_654_435_761) ^ bucket);
+                    let hue = 250.0 + f * 30.0 + t * 18.0;
+                    (glyph, hsl(hue, 0.32, 0.52 + 0.14 * pulse))
+                }
+            };
+            if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
+                cell.set_char(ch).set_fg(col);
+            }
+        }
+    }
+
+    // Abschluss-Sequenz: der eigene Trail ist um `steps` Tiles mit festen
+    // Buchstaben erweitert. Pro Tile (base→tip, gestaffelt):
+    //   1) Extend: Kopf schießt von der Mitte nach außen (DASH_EXTEND).
+    //   2) Shuffle: zufällige Zeichen flackern, bis `settle_at(i)` erreicht ist;
+    //      der Shuffle verlangsamt sich zum Settle hin.
+    //   3) Settle: Glyph rastet auf den festen Ziel-Buchstaben ein → ganz normaler
+    //      Trail-Bestandteil (heller, dezent abklingender Look).
+    // Die Cast-Welle am ZIEL kommt erst danach (in update gesetzt) — der Skill ist
+    // erst mit dem Settle abgeschlossen.
+    if let Some(df) = &state.dash_fire {
+        let tf = df.age.as_secs_f32();
+        let head = (tf / df.extend_dur() * df.steps as f32).floor() as i32; // sichtbarer Kopf
+        for i in 1..=df.steps {
+            if i > head {
+                continue; // noch nicht erweitert
+            }
+            let x = center.0 + df.dir.0 * i;
+            let y = center.1 + df.dir.1 * i;
+            if !in_bounds(x, y) {
+                continue;
+            }
+            // Settle-Zeitpunkt pro Tile, mit dem Stack-Speed beschleunigt (konsistent
+            // mit `settled_at`, das die Cast-Welle triggert).
+            let settle_at = (DASH_SETTLE_BASE + i as f32 * DASH_SETTLE_STAGGER) / df.speed;
+            let settled = tf >= settle_at;
+            let (ch, col) = if settled {
+                // Gesetzter Trail-Buchstabe: hell, fast neutral — Teil des Trails.
+                (df.letters[(i - 1) as usize], hsl(210.0, 0.10, 0.86))
+            } else {
+                // Shuffle: je näher am Settle, desto langsamer der Bucket-Wechsel.
+                let remaining = (settle_at - tf).max(0.0);
+                let flick = (10.0 + 60.0 * remaining).min(70.0);
+                let bucket = (tf * flick) as u64;
+                let seed = (i as u64).wrapping_mul(2_654_435_761) ^ bucket ^ df.nonce;
+                let hue = 255.0 + i as f32 * 5.0 + tf * 40.0;
+                (rand_glyph(seed), hsl(hue, 0.42, 0.62))
+            };
+            if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
+                cell.set_char(ch).set_fg(col);
+            }
+        }
+
+        // Cast-Welle am Ziel — erst nach dem Settle (Skill-Abschluss = Aktivierung).
+        if let Some(w) = df.wave {
+            let tx = center.0 + df.dir.0 * df.steps;
+            let ty = center.1 + df.dir.1 * df.steps;
+            draw_ring(buf, tx, ty, w, area);
+        }
+    }
+
+    // Spieler-Glyph an center.
+    if let Some(cell) = buf.cell_mut((center.0 as u16, center.1 as u16)) {
+        cell.set_char('@').set_fg(Color::White);
+    }
+
+    // Inventar-Badge oben-links: „dash" (+ „×N" pink, wenn gestackt). Demonstriert
+    // den Stack-Multiplikator als ×N-Identifier — bei nicht-stackbaren Powerups gäbe
+    // es stattdessen mehrere getrennte Inventar-Zeilen.
+    let bx = area.left() as i32 + 2;
+    let by = area.top() as i32 + 1;
+    let pink = Color::Rgb(0xFF, 0x5C, 0xA8);
+    let dim = Color::Rgb(0xC8, 0xC8, 0xD0);
+    for (k, ch) in "dash".chars().enumerate() {
+        if let Some(cell) = buf.cell_mut(((bx + k as i32) as u16, by as u16)) {
+            cell.set_char(ch).set_fg(dim);
+        }
+    }
+    if state.dash_stack > 1 {
+        let badge = format!(" ×{}", state.dash_stack);
+        for (k, ch) in badge.chars().enumerate() {
+            if let Some(cell) = buf.cell_mut(((bx + 4 + k as i32) as u16, by as u16)) {
+                cell.set_char(ch).set_fg(pink);
+            }
+        }
+    }
 }
 
 fn draw_help(f: &mut Frame, area: Rect, state: &State) {
@@ -1903,7 +2420,10 @@ fn draw_help(f: &mut Frame, area: Rect, state: &State) {
                 format!("b buf:{} ", if state.cast_on { "on" } else { "off" }),
                 Style::default().fg(theme::TEXT_DIM),
             ),
-            Span::styled("· 5 gallery · 6 inv-lab · q", Style::default().fg(theme::TEXT_DIM)),
+            Span::styled(
+                "· 5 gallery · 6 inv-lab · q",
+                Style::default().fg(theme::TEXT_DIM),
+            ),
         ]);
         f.render_widget(Paragraph::new(line).style(bg), rect);
         return;
@@ -1974,20 +2494,80 @@ fn draw_help(f: &mut Frame, area: Rect, state: &State) {
         return;
     }
 
+    if state.scene == 7 {
+        let beam_labels = ["gradient", "charging", "shimmer", "blocks", "chars"];
+        let beam = beam_labels[state.dash_beam_style as usize];
+        let line = Line::from(vec![
+            tag("hud_lab"),
+            Span::styled(" 7:dash-aim ", Style::default().fg(theme::ACCENT)),
+            Span::styled("│ ", Style::default().fg(theme::TEXT_DIM)),
+            Span::styled(
+                "◄ ► drehen ",
+                Style::default()
+                    .fg(theme::TEXT)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("· Enter dash ", Style::default().fg(theme::TEXT)),
+            Span::styled(
+                format!("▲▼ ×{} ", state.dash_stack),
+                Style::default()
+                    .fg(Color::Rgb(0xFF, 0x5C, 0xA8))
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("s strahl:{beam} "),
+                Style::default()
+                    .fg(theme::PICKUP_BASE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("dir:{:?} ", state.dash_dir),
+                Style::default().fg(theme::ACCENT),
+            ),
+            Span::styled("· 1/2/3/4/6 · q", Style::default().fg(theme::TEXT_DIM)),
+        ]);
+        f.render_widget(Paragraph::new(line).style(bg), rect);
+        return;
+    }
+
     let scene = match state.scene {
         2 => "2:strip",
         3 => "3:diegetic",
         _ => "1:corners",
     };
-    let reveal_dim = if state.mode.uses_fx_text() { theme::TEXT } else { theme::TEXT_DIM };
+    let reveal_dim = if state.mode.uses_fx_text() {
+        theme::TEXT
+    } else {
+        theme::TEXT_DIM
+    };
     let line = Line::from(vec![
-        Span::styled(" hud_lab ", Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " hud_lab ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(format!(" {scene} "), Style::default().fg(theme::ACCENT)),
         Span::styled("│ n notif · ", Style::default().fg(theme::TEXT_DIM)),
-        Span::styled(format!("m mode:{} ", state.mode.label()), Style::default().fg(theme::HIGHLIGHT_BG).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("i reveal:{} ", state.reveal.label()), Style::default().fg(reveal_dim)),
-        Span::styled(format!("c cursor:{} ", state.cursor.label()), Style::default().fg(theme::ACCENT)),
-        Span::styled("· 1/2/3/4/6 · v inv · f frames · q", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled(
+            format!("m mode:{} ", state.mode.label()),
+            Style::default()
+                .fg(theme::HIGHLIGHT_BG)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("i reveal:{} ", state.reveal.label()),
+            Style::default().fg(reveal_dim),
+        ),
+        Span::styled(
+            format!("c cursor:{} ", state.cursor.label()),
+            Style::default().fg(theme::ACCENT),
+        ),
+        Span::styled(
+            "· 1/2/3/4/6 · v inv · f frames · q",
+            Style::default().fg(theme::TEXT_DIM),
+        ),
     ]);
     f.render_widget(Paragraph::new(line).style(bg), rect);
 }

@@ -132,6 +132,20 @@ where
                 if debug {
                     app.debug_log(format!("recv {:?} mods={:?}", key.code, key.modifiers));
                 }
+                // Aim-Mode fängt Pfeile/Enter/Esc ab und schluckt alles andere:
+                // ◄/► drehen, Enter feuert, Esc bricht ab (kein Quit). Normale
+                // Schreib-/Cast-Tasten sind währenddessen inaktiv.
+                if app.aim.is_some() {
+                    match key.code {
+                        KeyCode::Left => app.aim_rotate(false),
+                        KeyCode::Right => app.aim_rotate(true),
+                        KeyCode::Enter => app.fire_aim(),
+                        KeyCode::Esc => app.cancel_aim(),
+                        _ => {}
+                    }
+                    app.tick();
+                    continue;
+                }
                 match key.code {
                     KeyCode::Esc => app.should_quit = true,
                     KeyCode::F(1) => app.toggle_debug(),

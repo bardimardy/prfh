@@ -1,6 +1,7 @@
 use crate::game::arena::{Arena, EntityKind};
 use crate::game::inventory::Inventory;
 use crate::game::powerup::{EffectTag, Powerup, PowerupWord, ENTRY_SNAP_RADIUS};
+use crate::game::skill::{skill_def, Activation, Aim8, TargetingSpec};
 use crate::game::world::{PlayerId, PlayerView, WorldView};
 use crate::game::writing::{StepResult, Trace, TraceStep, WritingEngine};
 use crate::hud::notify::{NotificationStack, NotifyKind};
@@ -14,6 +15,19 @@ pub struct PickupAnim {
 }
 
 pub const PICKUP_ANIM_DUR: Duration = Duration::from_millis(600);
+
+/// Generischer Aim-/Targeting-Zustand: aktiv, während ein gezielter Skill
+/// platziert wird. `age` treibt die render-time Strahl-Animation (wie `cast_wave`).
+pub struct AimState {
+    pub skill_name: String,
+    pub spec: TargetingSpec,
+    pub dir: Aim8,
+    pub age: Duration,
+}
+
+/// In-Game-Default-Mechanik des Dash: `false` = Blink/Teleport, `true` =
+/// Trail-Burst. Beide sind im hud_lab A/B-bar; hier einzeilig umschaltbar.
+pub const DASH_DEFAULT_BURST: bool = false;
 
 impl Default for App {
     fn default() -> Self {
@@ -52,6 +66,8 @@ pub struct App {
     pub anim_clock: Duration,
     /// Laufende Pickup-Animation (render-time); None = keine Anim aktiv.
     pub pickup_anim: Option<PickupAnim>,
+    /// Aktiver Aim-Mode (generisch, von gezielten Skills wie dash genutzt).
+    pub aim: Option<AimState>,
 }
 
 impl App {
@@ -74,6 +90,7 @@ impl App {
             cast_wave: None,
             anim_clock: Duration::ZERO,
             pickup_anim: None,
+            aim: None,
         }
     }
 
@@ -103,6 +120,7 @@ impl App {
             cast_wave: None,
             anim_clock: Duration::ZERO,
             pickup_anim: None,
+            aim: None,
         }
     }
 
@@ -239,21 +257,78 @@ impl App {
         }
     }
 
-    /// Aktivierungs-Dispatch-Hook (Powerup-Spec §7): matcht `effect_tag`. Vorerst
-    /// Log + Banner + render-time-Cast-Welle (echte Effekte wie Dash: später).
+    /// Aktivierungs-Dispatch (Powerup-Spec §7). Gezielte Skills (`Targeted`)
+    /// öffnen den Aim-Mode; `Instant`-Skills feuern sofort (Log + Banner +
+    /// render-time-Welle über denselben EffectEvent-Seam wie der Pickup).
     fn dispatch_cast(&mut self, tag: EffectTag, name: &str) {
-        match &tag {
-            EffectTag::Test => {
-                self.notifications
-                    .push(NotifyKind::Event, "⚡  CAST", name.to_string());
-                self.debug_log(format!("cast dispatch: {name} ({tag:?})"));
+        if let Some(def) = skill_def(name) {
+            if let Activation::Targeted(spec) = def.activation {
+                self.start_aim(name, spec);
+                self.debug_log(format!("aim open: {name}"));
+                return;
             }
         }
-        // Aktivierungs-Welle über denselben EffectEvent-Seam wie der Pickup.
+        self.notifications
+            .push(NotifyKind::Event, "⚡  CAST", name.to_string());
+        self.debug_log(format!("cast dispatch: {name} ({tag:?})"));
         self.apply_effect_event(crate::game::powerup::EffectEvent::Activation {
             tag,
             name: name.to_string(),
         });
+    }
+
+    /// Aim-Mode öffnen: Start-Richtung aus der aktuellen Lauf-Richtung.
+    pub fn start_aim(&mut self, skill_name: &str, spec: TargetingSpec) {
+        let dir = self
+            .local_engine()
+            .map(|e| Aim8::from_direction(e.direction))
+            .unwrap_or(Aim8::E);
+        self.aim = Some(AimState {
+            skill_name: skill_name.to_string(),
+            spec,
+            dir,
+            age: Duration::ZERO,
+        });
+    }
+
+    /// Zielstrahl um 45° drehen (`cw` = im Uhrzeigersinn).
+    pub fn aim_rotate(&mut self, cw: bool) {
+        if let Some(aim) = self.aim.as_mut() {
+            aim.dir = aim.dir.rotate(cw);
+        }
+    }
+
+    /// Aim-Mode ohne Wirkung verlassen.
+    pub fn cancel_aim(&mut self) {
+        self.aim = None;
+    }
+
+    /// Strahl-Alter fortschreiben (render-getrieben, wie `cast_wave`).
+    pub fn advance_aim(&mut self, dt: Duration) {
+        if let Some(aim) = self.aim.as_mut() {
+            aim.age += dt;
+        }
+    }
+
+    /// Dash abfeuern: Landepunkt = Cursor + Richtung·Range. Default-Mechanik
+    /// Blink (Teleport); `DASH_DEFAULT_BURST` schaltet auf Trail-Burst. Danach
+    /// Lande-Pop (Cast-Welle, render-zentriert auf dem neuen Cursor) + Banner.
+    pub fn fire_aim(&mut self) {
+        let Some(aim) = self.aim.take() else { return };
+        let (dx, dy) = aim.dir.delta();
+        let range = aim.spec.range as i32;
+        let facing = aim.dir.nearest_cardinal();
+        if let Mode::Single(e, _) = &mut self.mode {
+            if DASH_DEFAULT_BURST {
+                e.dash_trail_burst((dx, dy), aim.spec.range, facing);
+            } else {
+                let landing = (e.cursor.0 + dx * range, e.cursor.1 + dy * range);
+                e.dash_blink(landing, facing);
+            }
+        }
+        self.notifications
+            .push(NotifyKind::Event, "⚡  DASH", aim.skill_name);
+        self.cast_wave = Some(Duration::ZERO);
     }
 
     /// Single-player local input. (Host/Client routing added in Task 9.)
@@ -324,12 +399,16 @@ impl App {
             // Single despawnt direkt die lokale Arena).
             if let Some((id, name)) = pickup {
                 arena.despawn(id);
+                let effect_tag = crate::game::skill::skill_def(&name)
+                    .map(|d| d.effect_tag)
+                    .unwrap_or(EffectTag::Test);
                 self.inventory.add(Powerup {
                     id,
                     name: name.clone(),
-                    effect_tag: EffectTag::Test,
+                    effect_tag,
                 });
-                self.notifications.push(NotifyKind::Event, "✦  PICKUP", name.clone());
+                self.notifications
+                    .push(NotifyKind::Event, "✦  PICKUP", name.clone());
                 // Host-autoritatives Event → lokale render-time-Pickup-Anim auf der
                 // gerade hinzugefügten Zeile (Design §3.1). Slot = letzter Index.
                 let slot = self.inventory.len() - 1;
@@ -342,8 +421,11 @@ impl App {
                             .push(NotifyKind::Info, "⟹  TURNED", format!("{d:?}"));
                     }
                     StepResult::WroteAndStopped(_) => {
-                        self.notifications
-                            .push(NotifyKind::Info, "⟹  STOP", "next char overwrites");
+                        self.notifications.push(
+                            NotifyKind::Info,
+                            "⟹  STOP",
+                            "next char overwrites",
+                        );
                     }
                     _ => {}
                 }
@@ -375,7 +457,10 @@ impl App {
         use crate::game::powerup::EffectEvent;
         match ev {
             EffectEvent::Pickup { slot, .. } => {
-                self.pickup_anim = Some(PickupAnim { age: Duration::ZERO, slot });
+                self.pickup_anim = Some(PickupAnim {
+                    age: Duration::ZERO,
+                    slot,
+                });
             }
             EffectEvent::Activation { .. } => {
                 self.cast_wave = Some(Duration::ZERO);
@@ -403,7 +488,10 @@ mod w3_tests {
     fn apply_pickup_event_starts_anim_on_slot() {
         use crate::game::powerup::EffectEvent;
         let mut app = App::new_single();
-        app.apply_effect_event(EffectEvent::Pickup { slot: 2, name: "warp".into() });
+        app.apply_effect_event(EffectEvent::Pickup {
+            slot: 2,
+            name: "warp".into(),
+        });
         let a = app.pickup_anim.as_ref().expect("anim started");
         assert_eq!(a.slot, 2);
         assert_eq!(a.age, std::time::Duration::ZERO);
@@ -413,7 +501,10 @@ mod w3_tests {
     fn apply_activation_event_fires_cast_wave() {
         use crate::game::powerup::{EffectEvent, EffectTag};
         let mut app = App::new_single();
-        app.apply_effect_event(EffectEvent::Activation { tag: EffectTag::Test, name: "dash".into() });
+        app.apply_effect_event(EffectEvent::Activation {
+            tag: EffectTag::Test,
+            name: "dash".into(),
+        });
         assert!(app.cast_wave.is_some());
     }
 
@@ -421,9 +512,15 @@ mod w3_tests {
     fn pickup_anim_advances_then_clears_after_duration() {
         use crate::game::powerup::EffectEvent;
         let mut app = App::new_single();
-        app.apply_effect_event(EffectEvent::Pickup { slot: 0, name: "dash".into() });
+        app.apply_effect_event(EffectEvent::Pickup {
+            slot: 0,
+            name: "dash".into(),
+        });
         app.advance_pickup_anim(std::time::Duration::from_millis(100));
-        assert_eq!(app.pickup_anim.as_ref().unwrap().age, std::time::Duration::from_millis(100));
+        assert_eq!(
+            app.pickup_anim.as_ref().unwrap().age,
+            std::time::Duration::from_millis(100)
+        );
         app.advance_pickup_anim(std::time::Duration::from_millis(600)); // über PICKUP_ANIM_DUR
         assert!(app.pickup_anim.is_none(), "anim cleared after its duration");
     }
@@ -436,6 +533,104 @@ mod w3_tests {
         assert!(app.debug, "F1 zeigt das Overlay");
         app.toggle_debug();
         assert!(!app.debug, "F1 erneut versteckt es wieder");
+    }
+
+    #[test]
+    fn casting_dash_opens_aim_mode_from_current_facing() {
+        use crate::game::powerup::{EffectTag, Powerup};
+        use crate::game::skill::Aim8;
+        let mut app = App::new();
+        app.inventory.add(Powerup {
+            id: 0,
+            name: "dash".into(),
+            effect_tag: EffectTag::Dash,
+        });
+        app.toggle_cast();
+        for ch in "dash".chars() {
+            app.on_char(ch);
+        }
+        assert!(!app.cast_mode, "exact match leaves cast mode");
+        let aim = app.aim.as_ref().expect("dash opens aim mode");
+        assert_eq!(aim.skill_name, "dash");
+        // Default facing is Right → Aim8::E.
+        assert_eq!(aim.dir, Aim8::E);
+    }
+
+    #[test]
+    fn aim_rotate_turns_the_beam() {
+        use crate::game::skill::{Aim8, DirSet, TargetingSpec};
+        let mut app = App::new();
+        app.start_aim(
+            "dash",
+            TargetingSpec {
+                dirs: DirSet::Eight,
+                range: 6,
+            },
+        );
+        app.aim_rotate(true);
+        assert_eq!(app.aim.as_ref().unwrap().dir, Aim8::SE); // E → SE
+        app.aim_rotate(false);
+        app.aim_rotate(false);
+        assert_eq!(app.aim.as_ref().unwrap().dir, Aim8::NE); // SE → E → NE
+    }
+
+    #[test]
+    fn fire_aim_blinks_to_landing_clears_aim_and_pops() {
+        use crate::game::skill::{DirSet, TargetingSpec};
+        let mut app = App::new(); // cursor (0,0), facing Right → Aim8::E
+        app.start_aim(
+            "dash",
+            TargetingSpec {
+                dirs: DirSet::Eight,
+                range: 6,
+            },
+        );
+        app.fire_aim();
+        assert!(app.aim.is_none(), "aim cleared after firing");
+        assert!(app.cast_wave.is_some(), "landing pop fired");
+        assert_eq!(
+            app.local_engine().unwrap().cursor,
+            (6, 0),
+            "blinked 6 tiles east"
+        );
+    }
+
+    #[test]
+    fn cancel_aim_clears_without_moving() {
+        use crate::game::skill::{DirSet, TargetingSpec};
+        let mut app = App::new();
+        app.start_aim(
+            "dash",
+            TargetingSpec {
+                dirs: DirSet::Eight,
+                range: 6,
+            },
+        );
+        app.cancel_aim();
+        assert!(app.aim.is_none());
+        assert_eq!(
+            app.local_engine().unwrap().cursor,
+            (0, 0),
+            "cancel does not move"
+        );
+    }
+
+    #[test]
+    fn advance_aim_ages_the_beam() {
+        use crate::game::skill::{DirSet, TargetingSpec};
+        let mut app = App::new();
+        app.start_aim(
+            "dash",
+            TargetingSpec {
+                dirs: DirSet::Eight,
+                range: 6,
+            },
+        );
+        app.advance_aim(std::time::Duration::from_millis(50));
+        assert_eq!(
+            app.aim.as_ref().unwrap().age,
+            std::time::Duration::from_millis(50)
+        );
     }
 }
 
@@ -480,19 +675,24 @@ mod w2_tests {
 
     #[test]
     fn cast_exact_name_dispatches_and_leaves_cast_mode() {
+        // "revert" ist Instant → feuert sofort die Cast-Welle. (dash ist jetzt
+        // Targeted und öffnet stattdessen den Aim-Mode, separat getestet.)
         let mut app = App::new();
         app.inventory.add(Powerup {
             id: 0,
-            name: "dash".into(),
+            name: "revert".into(),
             effect_tag: EffectTag::Test,
         });
         app.toggle_cast();
-        assert!(app.cast_mode);
-        for ch in "dash".chars() {
-            app.on_char(ch); // routed to cast buffer while cast_mode
+        for ch in "revert".chars() {
+            app.on_char(ch);
         }
         assert!(!app.cast_mode, "exact match dispatches and exits cast mode");
-        assert!(app.cast_wave.is_some(), "dispatch fired the cast wave");
+        assert!(
+            app.cast_wave.is_some(),
+            "instant dispatch fired the cast wave"
+        );
+        assert!(app.aim.is_none(), "instant skill does not open aim mode");
     }
 
     #[test]
@@ -523,7 +723,10 @@ mod w2_tests {
         app.toggle_cast();
         assert!(app.cast_mode);
         app.on_char('d');
-        assert!(!app.cast_mode, "empty inventory → first cast char drops out");
+        assert!(
+            !app.cast_mode,
+            "empty inventory → first cast char drops out"
+        );
         assert!(app.cast_buffer.is_empty());
     }
 
@@ -602,7 +805,7 @@ mod w2_tests {
     fn completing_a_trace_starts_pickup_anim_on_the_new_slot() {
         let mut app = App::new(); // kein spawn_powerups — saubere Arena
         spawn_dash(&mut app); // legt "dash" bei (3,0) horizontal
-        // 3 Filler-Chars (xxx) bewegen den Cursor zu (3,0); dann armt+komplettiert "dash".
+                              // 3 Filler-Chars (xxx) bewegen den Cursor zu (3,0); dann armt+komplettiert "dash".
         for c in "xxxdash".chars() {
             app.on_char(c);
         }
@@ -635,5 +838,15 @@ mod w2_tests {
         assert_eq!(app.inventory.len(), 1, "Snap sollte das Andocken erlauben");
         assert_eq!(app.inventory.items[0].name, "dash");
         assert!(app.arena().entities.is_empty(), "Wort despawnt nach Pickup");
+    }
+
+    #[test]
+    fn picking_up_dash_stores_the_dash_effect_tag() {
+        let mut app = App::new();
+        spawn_dash(&mut app);
+        for ch in "xxxdash".chars() {
+            app.on_char(ch);
+        }
+        assert_eq!(app.inventory.items[0].effect_tag, EffectTag::Dash);
     }
 }

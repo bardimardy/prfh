@@ -20,6 +20,10 @@ fn is_non_overshoot(c: Interpolation) -> bool {
             | Interpolation::ElasticIn
             | Interpolation::ElasticOut
             | Interpolation::ElasticInOut
+            | Interpolation::BounceIn
+            | Interpolation::BounceOut
+            | Interpolation::BounceInOut
+            | Interpolation::Spring
     )
 }
 
@@ -62,6 +66,17 @@ pub fn activation() -> Effect {
             None,
             (400, Interpolation::QuadOut),
         ),
+    ])
+}
+
+/// Dash-Lande-Pop: kurzer, lokalisierter Effekt am Lande-Tile (kleines Rect) —
+/// die Zeichen sammeln sich (`coalesce`) mit warmem Hue-Shift. Bewusst KEIN
+/// `explode`/`evolve` (die blanken das Feld). Wird im hud_lab über ein kleines
+/// Rect prozessiert; In-Game übernimmt die zentrierte Cast-Welle den Pop.
+pub fn dash_landing() -> Effect {
+    fx::parallel(&[
+        fx::coalesce((250, Interpolation::SineOut)),
+        fx::hsl_shift_fg([60.0, 30.0, 40.0], (250, Interpolation::QuadOut)),
     ])
 }
 
@@ -136,5 +151,18 @@ mod tests {
         assert!(is_non_overshoot(Interpolation::QuadOut));
         assert!(is_non_overshoot(Interpolation::SineOut));
         assert!(is_non_overshoot(Interpolation::CubicOut));
+    }
+
+    #[test]
+    fn guard_rejects_bounce_and_spring() {
+        assert!(!is_non_overshoot(Interpolation::BounceOut));
+        assert!(!is_non_overshoot(Interpolation::BounceIn));
+        assert!(!is_non_overshoot(Interpolation::BounceInOut));
+        assert!(!is_non_overshoot(Interpolation::Spring));
+    }
+
+    #[test]
+    fn dash_landing_runs_to_end_without_panic() {
+        run_to_end(dash_landing());
     }
 }

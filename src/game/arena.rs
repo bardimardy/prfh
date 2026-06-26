@@ -161,7 +161,11 @@ mod tests {
         };
         a.apply_spawned(e.clone());
         a.apply_spawned(e); // doppeltes Delta
-        assert_eq!(a.entities.len(), 1, "Duplikat-ID darf keine Dublette erzeugen");
+        assert_eq!(
+            a.entities.len(),
+            1,
+            "Duplikat-ID darf keine Dublette erzeugen"
+        );
     }
 
     #[test]

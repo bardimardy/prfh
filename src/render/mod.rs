@@ -41,6 +41,7 @@ pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
         }
     }
     app.advance_pickup_anim(elapsed);
+    app.advance_aim(elapsed);
 
     let area = f.area();
     let world = app.world_view();
@@ -70,6 +71,18 @@ pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
     if let Some(age) = cast_wave {
         let center = ((area.width / 2) as i32, (area.height / 2) as i32);
         draw_cast_ring(f.buffer_mut(), center, age, area);
+    }
+
+    if let Some(aim) = app.aim.as_ref() {
+        let center = ((area.width / 2) as i32, (area.height / 2) as i32);
+        draw_dash_beam(
+            f.buffer_mut(),
+            center,
+            aim.dir.delta(),
+            aim.spec.range,
+            aim.age,
+            area,
+        );
     }
 
     draw_inventory(f, area, app);
@@ -221,19 +234,14 @@ fn draw_hud(f: &mut Frame, area: Rect, app: &App, world: &WorldView) {
         anchor_rect(area, Anchor::BottomLeft, area.width.saturating_sub(10), 1),
     );
 
-    // Control- + Quit-Hinweis in EINER Zeile unten-rechts: `Tab` und `[Esc]` in
-    // ACCENT, der Rest gedämpft. „Tab cast" links vom „[Esc] quit"; das frühere
-    // „` inv" entfällt (Inventar ist jetzt immer sichtbar). Breite 21 = exakte
-    // Inhaltslänge.
-    let controls = Line::from(vec![
-        Span::styled("Tab", Style::default().fg(theme::ACCENT)),
-        Span::styled(" cast · ", Style::default().fg(theme::TEXT_DIM)),
-        Span::styled("[Esc]", Style::default().fg(theme::ACCENT)),
-        Span::styled(" quit", Style::default().fg(theme::TEXT_DIM)),
-    ]);
+    // Control- + Quit-Hinweis in EINER Zeile unten-rechts: kontextabhängig
+    // (Aim-Mode zeigt Ziel-Hints, sonst cast/quit). Breite dynamisch aus
+    // controls_line() → kein hardcodierter Wert mehr.
+    let controls = controls_line(app);
+    let w = controls.width() as u16;
     f.render_widget(
         Paragraph::new(controls),
-        anchor_rect(area, Anchor::BottomRight, 21, 1),
+        anchor_rect(area, Anchor::BottomRight, w, 1),
     );
 }
 
@@ -429,6 +437,37 @@ const RING_DUR: f32 = 0.38;
 /// werden.
 const INVENTORY_WIDTH: u16 = 34;
 
+/// Helligkeit/Intensität eines Strahl-Tiles `i` Schritte vom Cursor, zum
+/// Zeitpunkt `age`. Reine Funktion (analog `trail_brightness`/`popup_pulse_line`)
+/// → scroll-immun + unit-testbar. Fließender Sinus-Puls, der nach außen läuft.
+fn dash_beam_intensity(i: usize, age: Duration) -> f32 {
+    let phase = age.as_secs_f32() * 6.0;
+    let wave = 0.5 + 0.5 * (i as f32 * 0.6 - phase).sin();
+    (0.55 + 0.45 * wave).clamp(0.0, 1.0)
+}
+
+/// Untere Steuerzeile, abhängig vom App-Zustand: im Aim-Mode die Aim-Hints,
+/// sonst der Default (cast/quit). Reine Funktion → unit-testbar.
+fn controls_line(app: &App) -> Line<'static> {
+    if app.aim.is_some() {
+        Line::from(vec![
+            Span::styled("◄ ►", Style::default().fg(theme::ACCENT)),
+            Span::styled(" drehen · ", Style::default().fg(theme::TEXT_DIM)),
+            Span::styled("Enter", Style::default().fg(theme::ACCENT)),
+            Span::styled(" dash · ", Style::default().fg(theme::TEXT_DIM)),
+            Span::styled("Esc", Style::default().fg(theme::ACCENT)),
+            Span::styled(" ab", Style::default().fg(theme::TEXT_DIM)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("Tab", Style::default().fg(theme::ACCENT)),
+            Span::styled(" cast · ", Style::default().fg(theme::TEXT_DIM)),
+            Span::styled("[Esc]", Style::default().fg(theme::ACCENT)),
+            Span::styled(" quit", Style::default().fg(theme::TEXT_DIM)),
+        ])
+    }
+}
+
 /// shimmer Idle-Style eines Powerup-Tiles: gray→white-Band, das übers Wort
 /// wandert. Reine Funktion aus `(t, index)` → scroll-immun (Skill `effects`,
 /// Learning #37): das Wort scrollt cursor-zentriert mit, ein tachyonfx-Zell-
@@ -446,7 +485,11 @@ fn shimmer_style(t: f32, i: usize) -> Style {
 fn blend(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let rgb = |c: Color| -> (u8, u8, u8) {
-        if let Color::Rgb(r, g, b) = c { (r, g, b) } else { (0, 0, 0) }
+        if let Color::Rgb(r, g, b) = c {
+            (r, g, b)
+        } else {
+            (0, 0, 0)
+        }
     };
     let (ar, ag, ab) = rgb(a);
     let (br, bg, bb) = rgb(b);
@@ -510,6 +553,51 @@ fn draw_cast_ring(buf: &mut Buffer, center: (i32, i32), age: Duration, area: Rec
             if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
                 cell.set_char(ch).set_fg(col);
             }
+        }
+    }
+}
+
+/// Animierter Dash-Vorschau-Strahl: render-time-Math, **fg-only** (wie
+/// `draw_cast_ring` → transparent über dem scrollenden Feld). Zeichnet `range`
+/// Tiles ab `center` (= Cursor-Bildschirmmitte) entlang `dir`, mit fließendem
+/// Hue/Helligkeits-Puls, und ein Reticle `◎` am Lande-Tile.
+fn draw_dash_beam(
+    buf: &mut Buffer,
+    center: (i32, i32),
+    dir: (i32, i32),
+    range: u16,
+    age: Duration,
+    area: Rect,
+) {
+    let in_bounds = |x: i32, y: i32| {
+        x >= area.left() as i32
+            && x < area.right() as i32
+            && y >= area.top() as i32
+            && y < area.bottom() as i32
+    };
+    for i in 1..=range as i32 {
+        let x = center.0 + dir.0 * i;
+        let y = center.1 + dir.1 * i;
+        if !in_bounds(x, y) {
+            continue;
+        }
+        let intensity = dash_beam_intensity(i as usize, age);
+        let hue = 200.0 + i as f32 * 8.0 + age.as_secs_f32() * 60.0;
+        let last = i == range as i32;
+        let (ch, col) = if last {
+            ('◎', hsl(hue, 0.6, 0.8))
+        } else {
+            let glyph = if dir.1 == 0 {
+                '─'
+            } else if dir.0 == 0 {
+                '│'
+            } else {
+                '·'
+            };
+            (glyph, hsl(hue, 0.55, 0.45 + 0.35 * intensity))
+        };
+        if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
+            cell.set_char(ch).set_fg(col);
         }
     }
 }
@@ -596,7 +684,11 @@ fn draw_inventory(f: &mut Frame, area: Rect, app: &App) {
                 if matched_names.iter().any(|n| n == &item.name) {
                     // Matched: Prefix als HIGHLIGHT_BG/FG-Kasten, Rest als TEXT.
                     // WICHTIG: Zeichenanzahl bleibt exakt gleich — kein Layout-Shift.
-                    let typed_len = app.cast_buffer.chars().count().min(item.name.chars().count());
+                    let typed_len = app
+                        .cast_buffer
+                        .chars()
+                        .count()
+                        .min(item.name.chars().count());
                     let prefix: String = item.name.chars().take(typed_len).collect();
                     let rest: String = item.name.chars().skip(typed_len).collect();
                     let pad = " ".repeat(8usize.saturating_sub(item.name.chars().count()));
@@ -683,7 +775,9 @@ mod tests {
         // Screen-Transform: (5,-2) - cursor(0,0) + center(40,12) = (45,10).
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        terminal
+            .draw(|f| draw(f, &mut app, Duration::ZERO))
+            .unwrap();
         let buf = terminal.backend().buffer();
         assert_eq!(
             buf.cell((45, 10)).unwrap().symbol(),
@@ -836,7 +930,9 @@ mod tests {
         }
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        terminal
+            .draw(|f| draw(f, &mut app, Duration::ZERO))
+            .unwrap();
         let buf = terminal.backend().buffer();
         // Screen-Transform: (5,-2) - (0,0) + (40,12) = (45,10).
         assert_eq!(
@@ -867,7 +963,9 @@ mod tests {
         app.trace.state = TraceState::Tracing { id, progress: 2 };
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        terminal
+            .draw(|f| draw(f, &mut app, Duration::ZERO))
+            .unwrap();
         let buf = terminal.backend().buffer();
 
         // Screen-Transform: (5,-2) - cursor(0,0) + center(40,12) = (45,10);
@@ -922,7 +1020,9 @@ mod tests {
         app.trace.state = TraceState::Tracing { id, progress: 2 };
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        terminal
+            .draw(|f| draw(f, &mut app, Duration::ZERO))
+            .unwrap();
         let buf = terminal.backend().buffer();
 
         // Screen-Transform wie oben: physische Tiles 45,46,47,48 für i=0..3.
@@ -991,7 +1091,9 @@ mod tests {
         app.on_char('d');
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        terminal
+            .draw(|f| draw(f, &mut app, Duration::ZERO))
+            .unwrap();
         let buf = terminal.backend().buffer();
         let found = buf
             .content()
@@ -1019,7 +1121,9 @@ mod tests {
         );
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        terminal
+            .draw(|f| draw(f, &mut app, Duration::ZERO))
+            .unwrap();
         let buf = terminal.backend().buffer();
         // Der Buchstabe 'd' wird im Cursor-Highlight (bg=ACCENT) gezeigt …
         let letter_highlighted = buf
@@ -1068,8 +1172,15 @@ mod tests {
     fn pickup_anim_renders_and_clears_without_panic() {
         use crate::game::powerup::{EffectEvent, EffectTag, Powerup};
         let mut app = App::new_single();
-        app.inventory.add(Powerup { id: 1, name: "dash".into(), effect_tag: EffectTag::Test });
-        app.apply_effect_event(EffectEvent::Pickup { slot: 0, name: "dash".into() });
+        app.inventory.add(Powerup {
+            id: 1,
+            name: "dash".into(),
+            effect_tag: EffectTag::Test,
+        });
+        app.apply_effect_event(EffectEvent::Pickup {
+            slot: 0,
+            name: "dash".into(),
+        });
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         // mehrere Frames über die Anim-Dauer hinaus — darf nicht paniken, Anim klärt
@@ -1085,8 +1196,16 @@ mod tests {
     fn shadow_highlight_renders_in_cast_mode_without_panic() {
         use crate::game::powerup::{EffectTag, Powerup};
         let mut app = App::new_single();
-        app.inventory.add(Powerup { id: 1, name: "dash".into(), effect_tag: EffectTag::Test });
-        app.inventory.add(Powerup { id: 2, name: "revert".into(), effect_tag: EffectTag::Test });
+        app.inventory.add(Powerup {
+            id: 1,
+            name: "dash".into(),
+            effect_tag: EffectTag::Test,
+        });
+        app.inventory.add(Powerup {
+            id: 2,
+            name: "revert".into(),
+            effect_tag: EffectTag::Test,
+        });
         app.toggle_cast();
         for c in "da".chars() {
             app.on_char(c);
@@ -1097,5 +1216,42 @@ mod tests {
         terminal
             .draw(|f| crate::render::draw(f, &mut app, std::time::Duration::from_millis(16)))
             .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod dash_render_tests {
+    use super::*;
+
+    #[test]
+    fn beam_intensity_is_in_unit_range_and_varies_with_age() {
+        let a = dash_beam_intensity(2, Duration::from_millis(0));
+        let b = dash_beam_intensity(2, Duration::from_millis(120));
+        assert!((0.0..=1.0).contains(&a));
+        assert!((0.0..=1.0).contains(&b));
+        assert!((a - b).abs() > f32::EPSILON, "beam pulses over time");
+    }
+
+    #[test]
+    fn controls_line_shows_aim_hints_only_while_aiming() {
+        use crate::game::skill::{DirSet, TargetingSpec};
+        let mut app = App::new();
+        let normal = line_text(&controls_line(&app));
+        assert!(normal.contains("cast"), "default shows cast hint");
+        app.start_aim(
+            "dash",
+            TargetingSpec {
+                dirs: DirSet::Eight,
+                range: 6,
+            },
+        );
+        let aiming = line_text(&controls_line(&app));
+        assert!(aiming.contains("dash"), "aim mode shows dash hint");
+        assert!(aiming.contains("drehen"), "aim mode shows rotate hint");
+    }
+
+    /// Helfer: den sichtbaren Text einer Line zusammensetzen.
+    fn line_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 }
