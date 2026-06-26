@@ -470,14 +470,20 @@ fn rand_glyph(seed: u64) -> char {
 
 /// Aspekt-normierte Schritt-Anzahl des Dash-Strahls für eine Richtung: vertikale
 /// Zellen zählen ~2× (2:1-Zellaspekt, wie `draw_ring`), damit ALLE 8 Richtungen
-/// visuell gleich weit reichen. `beam_reach` ist die Ziel-Sichtweite in
-/// Breiten-Einheiten — bewusst groß für einen satten Strahl.
-fn dash_steps(dir: (i32, i32)) -> i32 {
-    let beam_reach = 16.0;
+/// visuell gleich weit reichen. Die Reichweite skaliert mit dem Stack-
+/// Multiplikator (`stack`) — der ×N-Identifier bestimmt die Länge des Dash.
+fn dash_steps(dir: (i32, i32), stack: u32) -> i32 {
+    let beam_reach = 14.0 + 10.0 * stack as f32; // länger pro Stack
     let step_len = (((dir.0 * dir.0) + (2 * dir.1) * (2 * dir.1)) as f32)
         .sqrt()
         .max(1.0);
     (beam_reach / step_len).round().max(1.0) as i32
+}
+
+/// Speed-Faktor aus dem Stack-Multiplikator: mehr Stacks → schnellerer Dash
+/// (kürzere Extend-/Settle-Zeiten).
+fn dash_speed(stack: u32) -> f32 {
+    1.0 + 0.3 * (stack.saturating_sub(1)) as f32
 }
 
 // Dash-Abschluss-Timeline (Sekunden, ab Bestätigung):
@@ -493,14 +499,21 @@ struct DashFire {
     age: Duration,
     dir: (i32, i32),
     steps: i32,
+    speed: f32,             // Stack-Speed-Faktor (>1 = schneller)
     letters: Vec<char>,     // feste Ziel-Buchstaben, Index 0 = Schritt 1
     nonce: u64,             // variiert die Buchstaben/Shuffle pro Abschuss
     wave: Option<Duration>, // Cast-Welle am Ziel; None bis Settle fertig
 }
 
 impl DashFire {
+    /// Extend-Dauer (Kopf base→tip), durch den Speed-Faktor beschleunigt.
+    fn extend_dur(&self) -> f32 {
+        DASH_EXTEND / self.speed
+    }
+
+    /// Zeitpunkt, zu dem das letzte Tile gesetzt ist (Skill-Abschluss).
     fn settled_at(&self) -> f32 {
-        DASH_SETTLE_BASE + self.steps as f32 * DASH_SETTLE_STAGGER
+        (DASH_SETTLE_BASE + self.steps as f32 * DASH_SETTLE_STAGGER) / self.speed
     }
 }
 
@@ -807,7 +820,7 @@ struct State {
     // Dash-Aim-Szene (Szene 7)
     dash_dir: prfh::game::skill::Aim8,
     dash_age: Duration,
-    dash_burst: bool,            // false = Blink, true = Trail-Burst
+    dash_stack: u32,             // Multiplikator ×N: treibt Länge + Speed
     dash_beam_style: u8,         // 0..=4, A/B der Strahl-Stile
     dash_fire: Option<DashFire>, // läuft die Abschluss-Sequenz?
 }
@@ -844,7 +857,7 @@ impl State {
             inv_anchor: InvAnchor::TopRight,
             dash_dir: prfh::game::skill::Aim8::E,
             dash_age: Duration::ZERO,
-            dash_burst: false,
+            dash_stack: 1,
             dash_beam_style: 0,
             dash_fire: None,
         }
@@ -859,7 +872,7 @@ impl State {
             return;
         }
         let dir = self.dash_dir.delta();
-        let steps = dash_steps(dir);
+        let steps = dash_steps(dir, self.dash_stack);
         let nonce = self.dash_age.as_nanos() as u64 | 1;
         let letters = (1..=steps)
             .map(|i| rand_glyph((i as u64).wrapping_mul(0x9E37_79B9) ^ nonce))
@@ -868,6 +881,7 @@ impl State {
             age: Duration::ZERO,
             dir,
             steps,
+            speed: dash_speed(self.dash_stack),
             letters,
             nonce,
             wave: None,
@@ -1065,12 +1079,8 @@ fn main() -> io::Result<()> {
                                 state.cast_style = state.cast_style.next();
                             }
                         }
-                        KeyCode::Char('b') => {
-                            if state.scene == 7 {
-                                state.dash_burst = !state.dash_burst;
-                            } else {
-                                state.cast_on = !state.cast_on;
-                            }
+                        KeyCode::Char('b') if state.scene != 7 => {
+                            state.cast_on = !state.cast_on;
                         }
                         KeyCode::Char('n') => state.fire(),
                         KeyCode::Char('m') => state.mode = state.mode.next(),
@@ -1078,8 +1088,20 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('c') => state.cursor = state.cursor.next(),
                         KeyCode::Char('v') => state.toggle_inventory(),
                         KeyCode::Char('f') => state.frames = !state.frames,
-                        KeyCode::Up => state.dir = '↑',
-                        KeyCode::Down => state.dir = '↓',
+                        KeyCode::Up => {
+                            if state.scene == 7 {
+                                state.dash_stack = (state.dash_stack + 1).min(5);
+                            } else {
+                                state.dir = '↑';
+                            }
+                        }
+                        KeyCode::Down => {
+                            if state.scene == 7 {
+                                state.dash_stack = state.dash_stack.saturating_sub(1).max(1);
+                            } else {
+                                state.dir = '↓';
+                            }
+                        }
                         KeyCode::Left => {
                             if state.scene == 7 {
                                 state.dash_dir = state.dash_dir.rotate(false);
@@ -2162,9 +2184,10 @@ fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
     state.inv_effect.process(dt.into(), f.buffer_mut(), rect);
 }
 
-/// Szene 7 — Dash-Aim: 8-Richtungs-Rotation, beide Dash-Mechaniken (Blink vs.
-/// Trail-Burst) und 3 Vorschau-Strahl-Stile im A/B-Vergleich. Die Kamera ist
-/// FEST — so ist der Streak über das Feld als Demo sichtbar.
+/// Szene 7 — Dash-Aim: 8-Richtungs-Rotation (◄ ►), Stack-Multiplikator ×N (▲ ▼,
+/// treibt Länge + Speed) und 5 Vorschau-Strahl-Stile (s). Enter spielt die volle
+/// Abschluss-Sequenz: Trail-Erweiterung mit festen Buchstaben → Shuffle → Settle →
+/// Cast-Welle am Ziel. Die Kamera ist FEST — so ist die Sequenz als Demo sichtbar.
 fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
     use ratatui::style::Color;
     let buf = f.buffer_mut();
@@ -2173,8 +2196,9 @@ fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
         area.top() as i32 + area.height as i32 / 2,
     );
     let (dx, dy) = state.dash_dir.delta();
-    // Aspekt-normierte Schritt-Anzahl (alle 8 Richtungen gleich weit, s. dash_steps).
-    let steps = dash_steps((dx, dy));
+    // Aspekt-normierte Schritt-Anzahl (alle 8 Richtungen gleich weit, s. dash_steps);
+    // Länge skaliert mit dem Stack-Multiplikator.
+    let steps = dash_steps((dx, dy), state.dash_stack);
     let t = state.dash_age.as_secs_f32();
     let in_bounds = |x: i32, y: i32| {
         x >= area.left() as i32
@@ -2279,7 +2303,7 @@ fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
     // erst mit dem Settle abgeschlossen.
     if let Some(df) = &state.dash_fire {
         let tf = df.age.as_secs_f32();
-        let head = (tf / DASH_EXTEND * df.steps as f32).floor() as i32; // sichtbarer Kopf
+        let head = (tf / df.extend_dur() * df.steps as f32).floor() as i32; // sichtbarer Kopf
         for i in 1..=df.steps {
             if i > head {
                 continue; // noch nicht erweitert
@@ -2289,7 +2313,9 @@ fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
             if !in_bounds(x, y) {
                 continue;
             }
-            let settle_at = DASH_SETTLE_BASE + i as f32 * DASH_SETTLE_STAGGER;
+            // Settle-Zeitpunkt pro Tile, mit dem Stack-Speed beschleunigt (konsistent
+            // mit `settled_at`, das die Cast-Welle triggert).
+            let settle_at = (DASH_SETTLE_BASE + i as f32 * DASH_SETTLE_STAGGER) / df.speed;
             let settled = tf >= settle_at;
             let (ch, col) = if settled {
                 // Gesetzter Trail-Buchstabe: hell, fast neutral — Teil des Trails.
@@ -2297,8 +2323,8 @@ fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
             } else {
                 // Shuffle: je näher am Settle, desto langsamer der Bucket-Wechsel.
                 let remaining = (settle_at - tf).max(0.0);
-                let speed = (10.0 + 60.0 * remaining).min(70.0);
-                let bucket = (tf * speed) as u64;
+                let flick = (10.0 + 60.0 * remaining).min(70.0);
+                let bucket = (tf * flick) as u64;
                 let seed = (i as u64).wrapping_mul(2_654_435_761) ^ bucket ^ df.nonce;
                 let hue = 255.0 + i as f32 * 5.0 + tf * 40.0;
                 (rand_glyph(seed), hsl(hue, 0.42, 0.62))
@@ -2319,6 +2345,27 @@ fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
     // Spieler-Glyph an center.
     if let Some(cell) = buf.cell_mut((center.0 as u16, center.1 as u16)) {
         cell.set_char('@').set_fg(Color::White);
+    }
+
+    // Inventar-Badge oben-links: „dash" (+ „×N" pink, wenn gestackt). Demonstriert
+    // den Stack-Multiplikator als ×N-Identifier — bei nicht-stackbaren Powerups gäbe
+    // es stattdessen mehrere getrennte Inventar-Zeilen.
+    let bx = area.left() as i32 + 2;
+    let by = area.top() as i32 + 1;
+    let pink = Color::Rgb(0xFF, 0x5C, 0xA8);
+    let dim = Color::Rgb(0xC8, 0xC8, 0xD0);
+    for (k, ch) in "dash".chars().enumerate() {
+        if let Some(cell) = buf.cell_mut(((bx + k as i32) as u16, by as u16)) {
+            cell.set_char(ch).set_fg(dim);
+        }
+    }
+    if state.dash_stack > 1 {
+        let badge = format!(" ×{}", state.dash_stack);
+        for (k, ch) in badge.chars().enumerate() {
+            if let Some(cell) = buf.cell_mut(((bx + 4 + k as i32) as u16, by as u16)) {
+                cell.set_char(ch).set_fg(pink);
+            }
+        }
     }
 }
 
@@ -2448,7 +2495,6 @@ fn draw_help(f: &mut Frame, area: Rect, state: &State) {
     }
 
     if state.scene == 7 {
-        let mech = if state.dash_burst { "burst" } else { "blink" };
         let beam_labels = ["gradient", "charging", "shimmer", "blocks", "chars"];
         let beam = beam_labels[state.dash_beam_style as usize];
         let line = Line::from(vec![
@@ -2463,9 +2509,9 @@ fn draw_help(f: &mut Frame, area: Rect, state: &State) {
             ),
             Span::styled("· Enter dash ", Style::default().fg(theme::TEXT)),
             Span::styled(
-                format!("b mech:{mech} "),
+                format!("▲▼ ×{} ", state.dash_stack),
                 Style::default()
-                    .fg(theme::HIGHLIGHT_BG)
+                    .fg(Color::Rgb(0xFF, 0x5C, 0xA8))
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
