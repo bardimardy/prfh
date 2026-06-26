@@ -454,6 +454,56 @@ fn draw_ring(buf: &mut Buffer, cx: i32, cy: i32, age: Duration, area: Rect) {
     }
 }
 
+/// Zeichen-Vorrat für die „random chars"-Optik (Preview + Shuffle). Bewusst
+/// code-artig (Buchstaben, Ziffern, Symbole), damit der Strahl wie ein
+/// flackernder Code-Schweif liest.
+const DASH_GLYPHS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789{}[]<>/=+*&^%$#";
+
+/// Deterministischer „Zufalls"-Glyph aus einem Seed (kein rng nötig → stabil
+/// pro Frame-Bucket, reproduzierbar).
+fn rand_glyph(seed: u64) -> char {
+    let h = seed
+        .wrapping_mul(2_654_435_761)
+        .wrapping_add(0x9E37_79B9_7F4A_7C15);
+    DASH_GLYPHS[(h % DASH_GLYPHS.len() as u64) as usize] as char
+}
+
+/// Aspekt-normierte Schritt-Anzahl des Dash-Strahls für eine Richtung: vertikale
+/// Zellen zählen ~2× (2:1-Zellaspekt, wie `draw_ring`), damit ALLE 8 Richtungen
+/// visuell gleich weit reichen. `beam_reach` ist die Ziel-Sichtweite in
+/// Breiten-Einheiten — bewusst groß für einen satten Strahl.
+fn dash_steps(dir: (i32, i32)) -> i32 {
+    let beam_reach = 16.0;
+    let step_len = (((dir.0 * dir.0) + (2 * dir.1) * (2 * dir.1)) as f32)
+        .sqrt()
+        .max(1.0);
+    (beam_reach / step_len).round().max(1.0) as i32
+}
+
+// Dash-Abschluss-Timeline (Sekunden, ab Bestätigung):
+const DASH_EXTEND: f32 = 0.12; // Kopf schießt base→tip (Trail-Erweiterung)
+const DASH_SETTLE_BASE: f32 = 0.28; // erstes Tile hört auf zu shuffeln + setzt sich
+const DASH_SETTLE_STAGGER: f32 = 0.05; // Versatz pro Tile (setzt sich base→tip)
+
+/// Laufende Dash-Abschluss-Sequenz (Szene 7): der eigene Trail wurde um `steps`
+/// Tiles mit festen Ziel-Buchstaben (`letters`) erweitert; diese shuffeln noch
+/// und setzen sich gestaffelt. Die Cast-Welle am Ziel (`wave`) startet ERST nach
+/// dem Settle — der Skill ist erst dann abgeschlossen.
+struct DashFire {
+    age: Duration,
+    dir: (i32, i32),
+    steps: i32,
+    letters: Vec<char>,     // feste Ziel-Buchstaben, Index 0 = Schritt 1
+    nonce: u64,             // variiert die Buchstaben/Shuffle pro Abschuss
+    wave: Option<Duration>, // Cast-Welle am Ziel; None bis Settle fertig
+}
+
+impl DashFire {
+    fn settled_at(&self) -> f32 {
+        DASH_SETTLE_BASE + self.steps as f32 * DASH_SETTLE_STAGGER
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum Kind {
     Info,  // 1 Zeile, häufig
@@ -758,8 +808,8 @@ struct State {
     dash_dir: prfh::game::skill::Aim8,
     dash_age: Duration,
     dash_burst: bool,            // false = Blink, true = Trail-Burst
-    dash_beam_style: u8,         // 0..=3, A/B der Strahl-Stile
-    dash_fire: Option<Duration>, // Abfeuer-Anim-Alter
+    dash_beam_style: u8,         // 0..=4, A/B der Strahl-Stile
+    dash_fire: Option<DashFire>, // läuft die Abschluss-Sequenz?
 }
 
 impl State {
@@ -798,6 +848,30 @@ impl State {
             dash_beam_style: 0,
             dash_fire: None,
         }
+    }
+
+    /// Dash bestätigen (Szene 7): erweitert den eigenen Trail um `steps` Tiles mit
+    /// festen, zufälligen Buchstaben und startet die Abschluss-Sequenz
+    /// (Shuffle→Settle→Cast am Ziel). `nonce` aus dem aktuellen `dash_age`, damit
+    /// jeder Abschuss andere Buchstaben zieht.
+    fn fire_dash(&mut self) {
+        if self.dash_fire.is_some() {
+            return;
+        }
+        let dir = self.dash_dir.delta();
+        let steps = dash_steps(dir);
+        let nonce = self.dash_age.as_nanos() as u64 | 1;
+        let letters = (1..=steps)
+            .map(|i| rand_glyph((i as u64).wrapping_mul(0x9E37_79B9) ^ nonce))
+            .collect();
+        self.dash_fire = Some(DashFire {
+            age: Duration::ZERO,
+            dir,
+            steps,
+            letters,
+            nonce,
+            wave: None,
+        });
     }
 
     /// Szene 6 betreten: Panel auf, sauberer Demo-Zustand (~2 Zeilen).
@@ -909,12 +983,19 @@ impl State {
                 self.pickup_anim = None;
             }
         }
-        // Dash-Aim-Szene: Richtungszeiger + Abfeuer-Anim altern.
+        // Dash-Aim-Szene: Preview-Uhr + Abschluss-Sequenz altern.
         self.dash_age += dt;
-        if let Some(age) = self.dash_fire.as_mut() {
-            *age += dt;
-            if age.as_secs_f32() > 0.6 {
-                self.dash_fire = None;
+        if let Some(df) = self.dash_fire.as_mut() {
+            df.age += dt;
+            // Cast-Welle am Ziel ERST nach dem Settle starten (Skill-Abschluss).
+            if df.wave.is_none() && df.age.as_secs_f32() >= df.settled_at() {
+                df.wave = Some(Duration::ZERO);
+            }
+            if let Some(w) = df.wave.as_mut() {
+                *w += dt;
+                if w.as_secs_f32() > RING_DUR {
+                    self.dash_fire = None; // Sequenz fertig → zurück zur Preview
+                }
             }
         }
         // Sanfter Auto-Replay in der finalen Cast-Szene: ~1.3 s Pause zwischen
@@ -979,7 +1060,7 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('w') => state.fire_wave(),
                         KeyCode::Char('s') => {
                             if state.scene == 7 {
-                                state.dash_beam_style = (state.dash_beam_style + 1) % 4;
+                                state.dash_beam_style = (state.dash_beam_style + 1) % 5;
                             } else {
                                 state.cast_style = state.cast_style.next();
                             }
@@ -1013,9 +1094,7 @@ fn main() -> io::Result<()> {
                                 state.dir = '→';
                             }
                         }
-                        KeyCode::Enter if state.scene == 7 => {
-                            state.dash_fire = Some(Duration::ZERO);
-                        }
+                        KeyCode::Enter if state.scene == 7 => state.fire_dash(),
                         _ => {}
                     }
                 }
@@ -2094,25 +2173,22 @@ fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
         area.top() as i32 + area.height as i32 / 2,
     );
     let (dx, dy) = state.dash_dir.delta();
-    // Aspekt-korrigierte Schritt-Anzahl: vertikale Zellen zählen ~2× (2:1-Zellaspekt,
-    // wie beim draw_cast_ring). So reichen ALLE 8 Richtungen visuell gleich weit —
-    // sonst sind gerade Richtungen weiter als die diagonalen. `beam_reach` ist die
-    // Ziel-Sichtweite in Breiten-Einheiten; bewusst groß für einen satten Strahl.
-    let beam_reach: f32 = 16.0;
-    let step_len = (((dx * dx) + (2 * dy) * (2 * dy)) as f32).sqrt().max(1.0);
-    let steps = (beam_reach / step_len).round().max(1.0) as i32;
+    // Aspekt-normierte Schritt-Anzahl (alle 8 Richtungen gleich weit, s. dash_steps).
+    let steps = dash_steps((dx, dy));
     let t = state.dash_age.as_secs_f32();
+    let in_bounds = |x: i32, y: i32| {
+        x >= area.left() as i32
+            && x < area.right() as i32
+            && y >= area.top() as i32
+            && y < area.bottom() as i32
+    };
 
-    // Vorschau-Strahl (4 Stile per `s`).
+    // Vorschau-Strahl (5 Stile per `s`).
     if state.dash_fire.is_none() {
         for i in 1..=steps {
             let x = center.0 + dx * i;
             let y = center.1 + dy * i;
-            if x < area.left() as i32
-                || x >= area.right() as i32
-                || y < area.top() as i32
-                || y >= area.bottom() as i32
-            {
+            if !in_bounds(x, y) {
                 continue;
             }
             // Fortschritt 0..1 entlang des Strahls — richtungs-unabhängig, da `steps`
@@ -2155,7 +2231,7 @@ fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
                         hsl(330.0, 0.5, if spark { 0.9 } else { 0.5 }),
                     )
                 }
-                _ => {
+                3 => {
                     // Volle, unterschiedlich shaded Blöcke: ein nach außen fließender
                     // Gradient (leicht animiert). Block-Glyph nach Wellen-Intensität,
                     // Farbe als Hue-Verlauf entlang des Strahls.
@@ -2175,6 +2251,16 @@ fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
                         hsl(hue, 0.6, 0.35 + 0.45 * wave),
                     )
                 }
+                _ => {
+                    // Random Chars: flackernder Code-Schweif aus zufälligen Zeichen +
+                    // dezenter Farb-Animation → liest sich klar als unverbindliche
+                    // Vorschau (genau die Optik, in die sich der gesetzte Trail
+                    // nachher „einfriert"). Langsamer Shuffle-Bucket.
+                    let bucket = (t * 12.0) as u64;
+                    let glyph = rand_glyph((i as u64).wrapping_mul(2_654_435_761) ^ bucket);
+                    let hue = 250.0 + f * 30.0 + t * 18.0;
+                    (glyph, hsl(hue, 0.32, 0.52 + 0.14 * pulse))
+                }
             };
             if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
                 cell.set_char(ch).set_fg(col);
@@ -2182,34 +2268,51 @@ fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
         }
     }
 
-    // Abfeuer-Anim: Math-Streak (Blink: Geist-Spur; Burst: voller Trail).
-    if let Some(age) = state.dash_fire {
-        let p = (age.as_secs_f32() / 0.12).clamp(0.0, 1.0);
-        let head = (p * steps as f32) as i32;
-        let lo = if state.dash_burst {
-            0
-        } else {
-            (head - 2).max(0)
-        };
-        for i in lo..=head {
-            let x = center.0 + dx * i;
-            let y = center.1 + dy * i;
-            if x < area.left() as i32
-                || x >= area.right() as i32
-                || y < area.top() as i32
-                || y >= area.bottom() as i32
-            {
+    // Abschluss-Sequenz: der eigene Trail ist um `steps` Tiles mit festen
+    // Buchstaben erweitert. Pro Tile (base→tip, gestaffelt):
+    //   1) Extend: Kopf schießt von der Mitte nach außen (DASH_EXTEND).
+    //   2) Shuffle: zufällige Zeichen flackern, bis `settle_at(i)` erreicht ist;
+    //      der Shuffle verlangsamt sich zum Settle hin.
+    //   3) Settle: Glyph rastet auf den festen Ziel-Buchstaben ein → ganz normaler
+    //      Trail-Bestandteil (heller, dezent abklingender Look).
+    // Die Cast-Welle am ZIEL kommt erst danach (in update gesetzt) — der Skill ist
+    // erst mit dem Settle abgeschlossen.
+    if let Some(df) = &state.dash_fire {
+        let tf = df.age.as_secs_f32();
+        let head = (tf / DASH_EXTEND * df.steps as f32).floor() as i32; // sichtbarer Kopf
+        for i in 1..=df.steps {
+            if i > head {
+                continue; // noch nicht erweitert
+            }
+            let x = center.0 + df.dir.0 * i;
+            let y = center.1 + df.dir.1 * i;
+            if !in_bounds(x, y) {
                 continue;
             }
-            let bright = if state.dash_burst {
-                0.8
+            let settle_at = DASH_SETTLE_BASE + i as f32 * DASH_SETTLE_STAGGER;
+            let settled = tf >= settle_at;
+            let (ch, col) = if settled {
+                // Gesetzter Trail-Buchstabe: hell, fast neutral — Teil des Trails.
+                (df.letters[(i - 1) as usize], hsl(210.0, 0.10, 0.86))
             } else {
-                1.0 - (head - i) as f32 * 0.3
+                // Shuffle: je näher am Settle, desto langsamer der Bucket-Wechsel.
+                let remaining = (settle_at - tf).max(0.0);
+                let speed = (10.0 + 60.0 * remaining).min(70.0);
+                let bucket = (tf * speed) as u64;
+                let seed = (i as u64).wrapping_mul(2_654_435_761) ^ bucket ^ df.nonce;
+                let hue = 255.0 + i as f32 * 5.0 + tf * 40.0;
+                (rand_glyph(seed), hsl(hue, 0.42, 0.62))
             };
-            let col = hsl(50.0, 0.7, (0.4 + 0.5 * bright).clamp(0.0, 1.0));
             if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
-                cell.set_char('•').set_fg(col);
+                cell.set_char(ch).set_fg(col);
             }
+        }
+
+        // Cast-Welle am Ziel — erst nach dem Settle (Skill-Abschluss = Aktivierung).
+        if let Some(w) = df.wave {
+            let tx = center.0 + df.dir.0 * df.steps;
+            let ty = center.1 + df.dir.1 * df.steps;
+            draw_ring(buf, tx, ty, w, area);
         }
     }
 
@@ -2346,7 +2449,7 @@ fn draw_help(f: &mut Frame, area: Rect, state: &State) {
 
     if state.scene == 7 {
         let mech = if state.dash_burst { "burst" } else { "blink" };
-        let beam_labels = ["gradient", "charging", "shimmer", "blocks"];
+        let beam_labels = ["gradient", "charging", "shimmer", "blocks", "chars"];
         let beam = beam_labels[state.dash_beam_style as usize];
         let line = Line::from(vec![
             tag("hud_lab"),
