@@ -758,7 +758,7 @@ struct State {
     dash_dir: prfh::game::skill::Aim8,
     dash_age: Duration,
     dash_burst: bool,            // false = Blink, true = Trail-Burst
-    dash_beam_style: u8,         // 0..=2, A/B der Strahl-Stile
+    dash_beam_style: u8,         // 0..=3, A/B der Strahl-Stile
     dash_fire: Option<Duration>, // Abfeuer-Anim-Alter
 }
 
@@ -979,7 +979,7 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('w') => state.fire_wave(),
                         KeyCode::Char('s') => {
                             if state.scene == 7 {
-                                state.dash_beam_style = (state.dash_beam_style + 1) % 3;
+                                state.dash_beam_style = (state.dash_beam_style + 1) % 4;
                             } else {
                                 state.cast_style = state.cast_style.next();
                             }
@@ -2094,11 +2094,18 @@ fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
         area.top() as i32 + area.height as i32 / 2,
     );
     let (dx, dy) = state.dash_dir.delta();
-    let range: i32 = 6;
+    // Aspekt-korrigierte Schritt-Anzahl: vertikale Zellen zählen ~2× (2:1-Zellaspekt,
+    // wie beim draw_cast_ring). So reichen ALLE 8 Richtungen visuell gleich weit —
+    // sonst sind gerade Richtungen weiter als die diagonalen. `beam_reach` ist die
+    // Ziel-Sichtweite in Breiten-Einheiten; bewusst groß für einen satten Strahl.
+    let beam_reach: f32 = 16.0;
+    let step_len = (((dx * dx) + (2 * dy) * (2 * dy)) as f32).sqrt().max(1.0);
+    let steps = (beam_reach / step_len).round().max(1.0) as i32;
+    let t = state.dash_age.as_secs_f32();
 
-    // Vorschau-Strahl (3 Stile per `s`).
+    // Vorschau-Strahl (4 Stile per `s`).
     if state.dash_fire.is_none() {
-        for i in 1..=range {
+        for i in 1..=steps {
             let x = center.0 + dx * i;
             let y = center.1 + dy * i;
             if x < area.left() as i32
@@ -2108,13 +2115,15 @@ fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
             {
                 continue;
             }
-            let t = state.dash_age.as_secs_f32();
-            let pulse = 0.5 + 0.5 * (i as f32 * 0.6 - t * 6.0).sin();
-            let last = i == range;
+            // Fortschritt 0..1 entlang des Strahls — richtungs-unabhängig, da `steps`
+            // pro Richtung normiert ist.
+            let f = i as f32 / steps as f32;
+            let pulse = 0.5 + 0.5 * (f * 4.0 - t * 6.0).sin();
+            let last = i == steps;
             let (ch, col) = match state.dash_beam_style {
                 0 => {
                     // Flowing Gradient Pulse
-                    let hue = 200.0 + i as f32 * 8.0 + t * 60.0;
+                    let hue = 200.0 + f * 50.0 + t * 60.0;
                     let l = 0.45 + 0.35 * pulse;
                     (
                         if last {
@@ -2131,11 +2140,11 @@ fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
                 }
                 1 => {
                     // Charging Sweep: heller Kopf wandert
-                    let head = ((t * 8.0) as i32 % range) + 1;
+                    let head = ((t * 8.0) as i32 % steps) + 1;
                     let bright = if i == head { 1.0 } else { 0.25 };
                     ('=', hsl(190.0, 0.5, 0.35 + 0.5 * bright))
                 }
-                _ => {
+                2 => {
                     // Shimmer/Laser: stabil + Funkeln
                     let hsh = (x as u64)
                         .wrapping_mul(2_654_435_761)
@@ -2144,6 +2153,26 @@ fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
                     (
                         if last { '◎' } else { '─' },
                         hsl(330.0, 0.5, if spark { 0.9 } else { 0.5 }),
+                    )
+                }
+                _ => {
+                    // Volle, unterschiedlich shaded Blöcke: ein nach außen fließender
+                    // Gradient (leicht animiert). Block-Glyph nach Wellen-Intensität,
+                    // Farbe als Hue-Verlauf entlang des Strahls.
+                    let wave = 0.5 + 0.5 * (f * 5.0 - t * 4.0).sin();
+                    let block = if wave > 0.72 {
+                        '█'
+                    } else if wave > 0.48 {
+                        '▓'
+                    } else if wave > 0.24 {
+                        '▒'
+                    } else {
+                        '░'
+                    };
+                    let hue = 265.0 + f * 70.0 + t * 25.0;
+                    (
+                        if last { '█' } else { block },
+                        hsl(hue, 0.6, 0.35 + 0.45 * wave),
                     )
                 }
             };
@@ -2156,7 +2185,7 @@ fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
     // Abfeuer-Anim: Math-Streak (Blink: Geist-Spur; Burst: voller Trail).
     if let Some(age) = state.dash_fire {
         let p = (age.as_secs_f32() / 0.12).clamp(0.0, 1.0);
-        let head = (p * range as f32) as i32;
+        let head = (p * steps as f32) as i32;
         let lo = if state.dash_burst {
             0
         } else {
@@ -2317,7 +2346,7 @@ fn draw_help(f: &mut Frame, area: Rect, state: &State) {
 
     if state.scene == 7 {
         let mech = if state.dash_burst { "burst" } else { "blink" };
-        let beam_labels = ["gradient", "charging", "shimmer"];
+        let beam_labels = ["gradient", "charging", "shimmer", "blocks"];
         let beam = beam_labels[state.dash_beam_style as usize];
         let line = Line::from(vec![
             tag("hud_lab"),
