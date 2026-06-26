@@ -13,6 +13,8 @@ pub const HIGHLIGHT_BG: Color = Color::Rgb(0xFF, 0x49, 0xA0);
 pub const HIGHLIGHT_FG: Color = Color::Rgb(0x14, 0x10, 0x12);
 /// Panel-/Overlay-Füllung.
 pub const PANEL_BG: Color = Color::Rgb(0x26, 0x26, 0x2B);
+/// Pinkes `×N`-Stack-Badge im Inventar (Count ≥ 2).
+pub const STACK_BADGE: Color = Color::Rgb(0xFF, 0x5C, 0xA8);
 /// Gesättigte Basis für den Pickup-Regenbogen.
 pub const PICKUP_BASE: Color = Color::Rgb(0xFF, 0x40, 0x80);
 /// Lesbarer Body-Text.
