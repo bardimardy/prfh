@@ -21,9 +21,10 @@ impl Axis {
 
 /// Fachlicher Effekt-Tag eines Powerups. Der Cast-Dispatch matcht darauf.
 /// Vorerst nur das Test-Powerup; additiv erweiterbar (Dash, Revert, …).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectTag {
     Test,
+    Dash,
 }
 
 /// Ein eingesammeltes Powerup im Inventar.

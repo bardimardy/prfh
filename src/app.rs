@@ -248,6 +248,11 @@ impl App {
                     .push(NotifyKind::Event, "⚡  CAST", name.to_string());
                 self.debug_log(format!("cast dispatch: {name} ({tag:?})"));
             }
+            EffectTag::Dash => {
+                self.notifications
+                    .push(NotifyKind::Event, "⚡  DASH", name.to_string());
+                self.debug_log(format!("cast dispatch: {name} ({tag:?}) — Aim-Mode folgt in Task 2"));
+            }
         }
         // Aktivierungs-Welle über denselben EffectEvent-Seam wie der Pickup.
         self.apply_effect_event(crate::game::powerup::EffectEvent::Activation {
