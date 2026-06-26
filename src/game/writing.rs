@@ -385,6 +385,36 @@ impl WritingEngine {
         }
         StepResult::Erased
     }
+
+    /// Blink/Teleport: Cursor springt direkt auf `landing`, Lauf-Richtung wird
+    /// auf `facing` gesetzt. Es entsteht bewusst eine Lücke (kein Trail zwischen
+    /// alter und neuer Position) — der „Sprung"-Charakter des Dash.
+    pub fn dash_blink(&mut self, landing: (i32, i32), facing: Direction) {
+        self.cursor = landing;
+        self.direction = facing;
+    }
+
+    /// Trail-Burst: schreibt sofort `range` Trail-Tiles ab dem Cursor entlang
+    /// `dir_delta` (lückenlos), Cursor endet auf dem Lande-Tile. Hält
+    /// `dir_history` Tile-für-Tile synchron (gleiche `tick`-Identität wie der
+    /// Trail), damit `on_backspace` korrekt zurückläuft. Glyph ist ein neutrales
+    /// Dash-Zeichen; `facing` ist die Lauf-Richtung danach.
+    pub fn dash_trail_burst(&mut self, dir_delta: (i32, i32), range: u16, facing: Direction) {
+        for _ in 0..range {
+            self.dir_history.push((self.tick, self.direction));
+            self.trail.push(Tile {
+                pos: self.cursor,
+                ch: '·',
+                tick: self.tick,
+                glow: 0,
+                brightness: TILE_MAX_BRIGHTNESS,
+                written_pace: self.pace,
+            });
+            self.cursor = (self.cursor.0 + dir_delta.0, self.cursor.1 + dir_delta.1);
+            self.tick = self.tick.saturating_add(1);
+        }
+        self.direction = facing;
+    }
 }
 
 /// Zustand der beobachtenden Pickup-Trace-FSM (Powerup-Spec §6).
@@ -1139,5 +1169,42 @@ mod tests {
         e.tick_visuals();
         assert_eq!(e.trail.len(), TRAIL_SAFE);
         assert!(e.trail.iter().all(|t| t.brightness == TILE_MAX_BRIGHTNESS));
+    }
+}
+
+#[cfg(test)]
+mod dash_tests {
+    use super::*;
+
+    #[test]
+    fn blink_teleports_cursor_and_sets_facing_leaving_gap() {
+        let mut e = WritingEngine::new((0, 0));
+        e.on_char('a'); // one trail tile at (0,0), cursor now (1,0)
+        let before = e.trail.len();
+        e.dash_blink((7, 0), Direction::Right);
+        assert_eq!(e.cursor, (7, 0), "cursor jumps to landing");
+        assert_eq!(e.direction, Direction::Right);
+        assert_eq!(e.trail.len(), before, "blink leaves a gap (no trail tiles)");
+    }
+
+    #[test]
+    fn trail_burst_writes_range_tiles_and_lands() {
+        let mut e = WritingEngine::new((0, 0)); // cursor (0,0)
+        e.dash_trail_burst((1, 0), 4, Direction::Right);
+        assert_eq!(e.cursor, (4, 0), "cursor ends at the landing tile");
+        assert_eq!(e.trail.len(), 4, "exactly range tiles written");
+        // Tiles sit on the stepped path p_0..p_3.
+        let positions: Vec<(i32, i32)> = e.trail.iter().map(|t| t.pos).collect();
+        assert_eq!(positions, vec![(0, 0), (1, 0), (2, 0), (3, 0)]);
+    }
+
+    #[test]
+    fn trail_burst_keeps_dir_history_in_sync_for_backspace() {
+        let mut e = WritingEngine::new((2, 2));
+        e.dash_trail_burst((0, 1), 3, Direction::Down); // burst downward
+        assert_eq!(e.dir_history.len(), e.trail.len(), "one history entry per tile");
+        // Backspacing must not trip the desync debug_assert and walks tiles back.
+        e.on_backspace();
+        assert_eq!(e.trail.len(), 2);
     }
 }
