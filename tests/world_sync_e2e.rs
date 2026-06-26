@@ -59,7 +59,10 @@ fn client_sees_entity_spawned_via_delta() {
     });
 
     let (_world, mut arena, handle) = connect(&addr.to_string(), "Bob").unwrap();
-    assert!(arena.entities.is_empty(), "frischer Client startet ohne Entitäten");
+    assert!(
+        arena.entities.is_empty(),
+        "frischer Client startet ohne Entitäten"
+    );
 
     // Auf das Delta warten und anwenden.
     let deadline = Instant::now() + Duration::from_secs(3);
@@ -109,7 +112,11 @@ fn late_join_client_gets_entity_via_welcome_snapshot() {
     });
 
     let (_world, arena, _handle): (_, Arena, _) = connect(&addr.to_string(), "Late").unwrap();
-    assert_eq!(arena.entities.len(), 1, "Late-Join muss die Entität via Snapshot sehen");
+    assert_eq!(
+        arena.entities.len(),
+        1,
+        "Late-Join muss die Entität via Snapshot sehen"
+    );
     assert_eq!(arena.entities[0].pos, (1, 2));
     match &arena.entities[0].kind {
         EntityKind::PowerupWord(pw) => assert_eq!(pw.name, "sudo"),

@@ -422,7 +422,10 @@ impl WritingEngine {
 pub enum TraceState {
     #[default]
     Idle,
-    Tracing { id: u32, progress: usize },
+    Tracing {
+        id: u32,
+        progress: usize,
+    },
 }
 
 /// Ergebnis eines `observe`-Schritts.
@@ -489,7 +492,8 @@ impl Trace {
                     self.state = TraceState::Idle;
                     return TraceStep::Reset;
                 };
-                if w.keystroke_tile(progress) == Some(pos) && w.expected_char(progress) == Some(ch) {
+                if w.keystroke_tile(progress) == Some(pos) && w.expected_char(progress) == Some(ch)
+                {
                     let next = progress + 1;
                     if next >= w.len() {
                         self.state = TraceState::Idle;
@@ -1144,7 +1148,11 @@ mod tests {
         // Every surviving history entry carries the CORRECT direction for its tick
         // (immutable tick→dir pairing, preserved through identity pruning).
         for (tk, d) in &e.dir_history {
-            assert_eq!(Some(d), truth.get(tk), "tick {tk} kept its true pre-write dir");
+            assert_eq!(
+                Some(d),
+                truth.get(tk),
+                "tick {tk} kept its true pre-write dir"
+            );
         }
 
         // Backspacing newest-first restores each surviving tile's ground-truth
@@ -1202,7 +1210,11 @@ mod dash_tests {
     fn trail_burst_keeps_dir_history_in_sync_for_backspace() {
         let mut e = WritingEngine::new((2, 2));
         e.dash_trail_burst((0, 1), 3, Direction::Down); // burst downward
-        assert_eq!(e.dir_history.len(), e.trail.len(), "one history entry per tile");
+        assert_eq!(
+            e.dir_history.len(),
+            e.trail.len(),
+            "one history entry per tile"
+        );
         // Backspacing must not trip the desync debug_assert and walks tiles back.
         e.on_backspace();
         assert_eq!(e.trail.len(), 2);

@@ -400,14 +400,15 @@ impl App {
             if let Some((id, name)) = pickup {
                 arena.despawn(id);
                 let effect_tag = crate::game::skill::skill_def(&name)
-                    .map(|d| d.effect_tag.clone())
+                    .map(|d| d.effect_tag)
                     .unwrap_or(EffectTag::Test);
                 self.inventory.add(Powerup {
                     id,
                     name: name.clone(),
                     effect_tag,
                 });
-                self.notifications.push(NotifyKind::Event, "✦  PICKUP", name.clone());
+                self.notifications
+                    .push(NotifyKind::Event, "✦  PICKUP", name.clone());
                 // Host-autoritatives Event → lokale render-time-Pickup-Anim auf der
                 // gerade hinzugefügten Zeile (Design §3.1). Slot = letzter Index.
                 let slot = self.inventory.len() - 1;
@@ -420,8 +421,11 @@ impl App {
                             .push(NotifyKind::Info, "⟹  TURNED", format!("{d:?}"));
                     }
                     StepResult::WroteAndStopped(_) => {
-                        self.notifications
-                            .push(NotifyKind::Info, "⟹  STOP", "next char overwrites");
+                        self.notifications.push(
+                            NotifyKind::Info,
+                            "⟹  STOP",
+                            "next char overwrites",
+                        );
                     }
                     _ => {}
                 }
@@ -453,7 +457,10 @@ impl App {
         use crate::game::powerup::EffectEvent;
         match ev {
             EffectEvent::Pickup { slot, .. } => {
-                self.pickup_anim = Some(PickupAnim { age: Duration::ZERO, slot });
+                self.pickup_anim = Some(PickupAnim {
+                    age: Duration::ZERO,
+                    slot,
+                });
             }
             EffectEvent::Activation { .. } => {
                 self.cast_wave = Some(Duration::ZERO);
@@ -481,7 +488,10 @@ mod w3_tests {
     fn apply_pickup_event_starts_anim_on_slot() {
         use crate::game::powerup::EffectEvent;
         let mut app = App::new_single();
-        app.apply_effect_event(EffectEvent::Pickup { slot: 2, name: "warp".into() });
+        app.apply_effect_event(EffectEvent::Pickup {
+            slot: 2,
+            name: "warp".into(),
+        });
         let a = app.pickup_anim.as_ref().expect("anim started");
         assert_eq!(a.slot, 2);
         assert_eq!(a.age, std::time::Duration::ZERO);
@@ -491,7 +501,10 @@ mod w3_tests {
     fn apply_activation_event_fires_cast_wave() {
         use crate::game::powerup::{EffectEvent, EffectTag};
         let mut app = App::new_single();
-        app.apply_effect_event(EffectEvent::Activation { tag: EffectTag::Test, name: "dash".into() });
+        app.apply_effect_event(EffectEvent::Activation {
+            tag: EffectTag::Test,
+            name: "dash".into(),
+        });
         assert!(app.cast_wave.is_some());
     }
 
@@ -499,9 +512,15 @@ mod w3_tests {
     fn pickup_anim_advances_then_clears_after_duration() {
         use crate::game::powerup::EffectEvent;
         let mut app = App::new_single();
-        app.apply_effect_event(EffectEvent::Pickup { slot: 0, name: "dash".into() });
+        app.apply_effect_event(EffectEvent::Pickup {
+            slot: 0,
+            name: "dash".into(),
+        });
         app.advance_pickup_anim(std::time::Duration::from_millis(100));
-        assert_eq!(app.pickup_anim.as_ref().unwrap().age, std::time::Duration::from_millis(100));
+        assert_eq!(
+            app.pickup_anim.as_ref().unwrap().age,
+            std::time::Duration::from_millis(100)
+        );
         app.advance_pickup_anim(std::time::Duration::from_millis(600)); // über PICKUP_ANIM_DUR
         assert!(app.pickup_anim.is_none(), "anim cleared after its duration");
     }
@@ -541,7 +560,13 @@ mod w3_tests {
     fn aim_rotate_turns_the_beam() {
         use crate::game::skill::{Aim8, DirSet, TargetingSpec};
         let mut app = App::new();
-        app.start_aim("dash", TargetingSpec { dirs: DirSet::Eight, range: 6 });
+        app.start_aim(
+            "dash",
+            TargetingSpec {
+                dirs: DirSet::Eight,
+                range: 6,
+            },
+        );
         app.aim_rotate(true);
         assert_eq!(app.aim.as_ref().unwrap().dir, Aim8::SE); // E → SE
         app.aim_rotate(false);
@@ -553,30 +578,59 @@ mod w3_tests {
     fn fire_aim_blinks_to_landing_clears_aim_and_pops() {
         use crate::game::skill::{DirSet, TargetingSpec};
         let mut app = App::new(); // cursor (0,0), facing Right → Aim8::E
-        app.start_aim("dash", TargetingSpec { dirs: DirSet::Eight, range: 6 });
+        app.start_aim(
+            "dash",
+            TargetingSpec {
+                dirs: DirSet::Eight,
+                range: 6,
+            },
+        );
         app.fire_aim();
         assert!(app.aim.is_none(), "aim cleared after firing");
         assert!(app.cast_wave.is_some(), "landing pop fired");
-        assert_eq!(app.local_engine().unwrap().cursor, (6, 0), "blinked 6 tiles east");
+        assert_eq!(
+            app.local_engine().unwrap().cursor,
+            (6, 0),
+            "blinked 6 tiles east"
+        );
     }
 
     #[test]
     fn cancel_aim_clears_without_moving() {
         use crate::game::skill::{DirSet, TargetingSpec};
         let mut app = App::new();
-        app.start_aim("dash", TargetingSpec { dirs: DirSet::Eight, range: 6 });
+        app.start_aim(
+            "dash",
+            TargetingSpec {
+                dirs: DirSet::Eight,
+                range: 6,
+            },
+        );
         app.cancel_aim();
         assert!(app.aim.is_none());
-        assert_eq!(app.local_engine().unwrap().cursor, (0, 0), "cancel does not move");
+        assert_eq!(
+            app.local_engine().unwrap().cursor,
+            (0, 0),
+            "cancel does not move"
+        );
     }
 
     #[test]
     fn advance_aim_ages_the_beam() {
         use crate::game::skill::{DirSet, TargetingSpec};
         let mut app = App::new();
-        app.start_aim("dash", TargetingSpec { dirs: DirSet::Eight, range: 6 });
+        app.start_aim(
+            "dash",
+            TargetingSpec {
+                dirs: DirSet::Eight,
+                range: 6,
+            },
+        );
         app.advance_aim(std::time::Duration::from_millis(50));
-        assert_eq!(app.aim.as_ref().unwrap().age, std::time::Duration::from_millis(50));
+        assert_eq!(
+            app.aim.as_ref().unwrap().age,
+            std::time::Duration::from_millis(50)
+        );
     }
 }
 
@@ -634,7 +688,10 @@ mod w2_tests {
             app.on_char(ch);
         }
         assert!(!app.cast_mode, "exact match dispatches and exits cast mode");
-        assert!(app.cast_wave.is_some(), "instant dispatch fired the cast wave");
+        assert!(
+            app.cast_wave.is_some(),
+            "instant dispatch fired the cast wave"
+        );
         assert!(app.aim.is_none(), "instant skill does not open aim mode");
     }
 
@@ -666,7 +723,10 @@ mod w2_tests {
         app.toggle_cast();
         assert!(app.cast_mode);
         app.on_char('d');
-        assert!(!app.cast_mode, "empty inventory → first cast char drops out");
+        assert!(
+            !app.cast_mode,
+            "empty inventory → first cast char drops out"
+        );
         assert!(app.cast_buffer.is_empty());
     }
 
@@ -745,7 +805,7 @@ mod w2_tests {
     fn completing_a_trace_starts_pickup_anim_on_the_new_slot() {
         let mut app = App::new(); // kein spawn_powerups — saubere Arena
         spawn_dash(&mut app); // legt "dash" bei (3,0) horizontal
-        // 3 Filler-Chars (xxx) bewegen den Cursor zu (3,0); dann armt+komplettiert "dash".
+                              // 3 Filler-Chars (xxx) bewegen den Cursor zu (3,0); dann armt+komplettiert "dash".
         for c in "xxxdash".chars() {
             app.on_char(c);
         }

@@ -97,10 +97,20 @@ impl Reveal {
         match self {
             Reveal::Coalesce => fx::coalesce((ms, Interpolation::SineOut)),
             Reveal::SweepGlow => fx::parallel(&[
-                fx::sweep_in(Motion::LeftToRight, 10, 0, theme::PANEL_BG, (ms, Interpolation::SineOut)),
+                fx::sweep_in(
+                    Motion::LeftToRight,
+                    10,
+                    0,
+                    theme::PANEL_BG,
+                    (ms, Interpolation::SineOut),
+                ),
                 fx::hsl_shift(Some([0.0, 0.0, 35.0]), None, (ms, Interpolation::SineOut)),
             ]),
-            Reveal::Fade => fx::fade_from(theme::PANEL_BG, theme::PANEL_BG, (ms, Interpolation::SineOut)),
+            Reveal::Fade => fx::fade_from(
+                theme::PANEL_BG,
+                theme::PANEL_BG,
+                (ms, Interpolation::SineOut),
+            ),
         }
     }
 }
@@ -436,7 +446,7 @@ fn draw_ring(buf: &mut Buffer, cx: i32, cy: i32, age: Duration, area: Rect) {
             // Hell/pastellig: hohe Lightness, moderate Sättigung; Kern minimal heller.
             let col = hsl(hue, 0.55, 0.74 + 0.12 * intensity);
             let ch = if intensity > 0.66 { '•' } else { '·' }; // leicht, kein ●
-            // Nur fg + Glyph setzen — der Zell-Hintergrund (Spielfeld) bleibt.
+                                                               // Nur fg + Glyph setzen — der Zell-Hintergrund (Spielfeld) bleibt.
             if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
                 cell.set_char(ch).set_fg(col);
             }
@@ -489,7 +499,7 @@ struct Notif {
     detail: String,
     accent: Color,
     age: Duration,
-    text_fx: Option<Effect>,  // tachyonfx-Reveal (hybrid/full-fx), lazy ab Text-Phase
+    text_fx: Option<Effect>, // tachyonfx-Reveal (hybrid/full-fx), lazy ab Text-Phase
     panel_fx: Option<Effect>, // tachyonfx expand-Panel (nur full-fx), lazy
     fx_inited: bool,
 }
@@ -747,9 +757,9 @@ struct State {
     // Dash-Aim-Szene (Szene 7)
     dash_dir: prfh::game::skill::Aim8,
     dash_age: Duration,
-    dash_burst: bool,              // false = Blink, true = Trail-Burst
-    dash_beam_style: u8,           // 0..=2, A/B der Strahl-Stile
-    dash_fire: Option<Duration>,   // Abfeuer-Anim-Alter
+    dash_burst: bool,            // false = Blink, true = Trail-Burst
+    dash_beam_style: u8,         // 0..=2, A/B der Strahl-Stile
+    dash_fire: Option<Duration>, // Abfeuer-Anim-Alter
 }
 
 impl State {
@@ -839,9 +849,19 @@ impl State {
         // Verschiedene Typen rotieren → man sieht gemischtes Stacking.
         const S: &[(Kind, &str, &str, Color)] = &[
             (Kind::Info, "⟹  TURNED", "Up", theme::ACCENT),
-            (Kind::Event, "✦  PICKUP", "dash ins Inventar", theme::PICKUP_BASE),
+            (
+                Kind::Event,
+                "✦  PICKUP",
+                "dash ins Inventar",
+                theme::PICKUP_BASE,
+            ),
             (Kind::Info, "⟹  STOP", "next char overwrites", theme::DANGER),
-            (Kind::Major, "✓  MERGED", "main is green", theme::HIGHLIGHT_BG),
+            (
+                Kind::Major,
+                "✓  MERGED",
+                "main is green",
+                theme::HIGHLIGHT_BG,
+            ),
             (Kind::Event, "⚡  COMBO x12", "saubere Kette", theme::ACCENT),
         ];
         let (kind, title, detail, accent) = S[self.seq % S.len()];
@@ -993,10 +1013,8 @@ fn main() -> io::Result<()> {
                                 state.dir = '→';
                             }
                         }
-                        KeyCode::Enter => {
-                            if state.scene == 7 {
-                                state.dash_fire = Some(Duration::ZERO);
-                            }
+                        KeyCode::Enter if state.scene == 7 => {
+                            state.dash_fire = Some(Duration::ZERO);
                         }
                         _ => {}
                     }
@@ -1071,7 +1089,12 @@ fn draw_one(
         ((full_w as f32 * factor).round() as u16).clamp(1, full_w)
     };
     let x = area.left() + area.width.saturating_sub(w) / 2;
-    let rect = Rect { x, y: top, width: w, height: h };
+    let rect = Rect {
+        x,
+        y: top,
+        width: w,
+        height: h,
+    };
 
     // Panel-Hintergrund.
     paint_panel(f.buffer_mut(), rect);
@@ -1090,7 +1113,16 @@ fn draw_one(
             ));
         }
         if let Some(e) = n.panel_fx.as_mut() {
-            e.process(dt.into(), f.buffer_mut(), Rect { x: area.left() + area.width.saturating_sub(full_w) / 2, y: top, width: full_w, height: h });
+            e.process(
+                dt.into(),
+                f.buffer_mut(),
+                Rect {
+                    x: area.left() + area.width.saturating_sub(full_w) / 2,
+                    y: top,
+                    width: full_w,
+                    height: h,
+                },
+            );
         }
         return; // während Aufbau noch kein Text
     }
@@ -1142,24 +1174,49 @@ fn render_text(buf: &mut Buffer, rect: Rect, n: &Notif, alpha: f32) {
         let line = Line::from(vec![
             Span::styled(
                 format!("{} ", n.title),
-                Style::default().fg(title_fg).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(title_fg)
+                    .bg(theme::PANEL_BG)
+                    .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(n.detail.clone(), Style::default().fg(detail_fg).bg(theme::PANEL_BG)),
+            Span::styled(
+                n.detail.clone(),
+                Style::default().fg(detail_fg).bg(theme::PANEL_BG),
+            ),
         ]);
-        Paragraph::new(line).alignment(Alignment::Center).render(rect, buf);
+        Paragraph::new(line)
+            .alignment(Alignment::Center)
+            .render(rect, buf);
     } else {
         Paragraph::new(Span::styled(
             n.title.clone(),
-            Style::default().fg(title_fg).bg(theme::PANEL_BG).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(title_fg)
+                .bg(theme::PANEL_BG)
+                .add_modifier(Modifier::BOLD),
         ))
         .alignment(Alignment::Center)
-        .render(Rect { y: rect.y, height: 1, ..rect }, buf);
+        .render(
+            Rect {
+                y: rect.y,
+                height: 1,
+                ..rect
+            },
+            buf,
+        );
         Paragraph::new(Span::styled(
             n.detail.clone(),
             Style::default().fg(detail_fg).bg(theme::PANEL_BG),
         ))
         .alignment(Alignment::Center)
-        .render(Rect { y: rect.y + 1, height: 1, ..rect }, buf);
+        .render(
+            Rect {
+                y: rect.y + 1,
+                height: 1,
+                ..rect
+            },
+            buf,
+        );
     }
 }
 
@@ -1190,8 +1247,20 @@ fn draw_world_bg(buf: &mut Buffer, area: Rect, frame: u64) {
 }
 
 fn layout_corners(f: &mut Frame, area: Rect, state: &State) {
-    chip(f, anchor_rect(area, Anchor::TopLeft, 9, 1), "dir", &state.dir.to_string(), state.frames);
-    chip(f, anchor_rect(area, Anchor::TopRight, 12, 1), "combo", &format!("x{}", state.combo), state.frames);
+    chip(
+        f,
+        anchor_rect(area, Anchor::TopLeft, 9, 1),
+        "dir",
+        &state.dir.to_string(),
+        state.frames,
+    );
+    chip(
+        f,
+        anchor_rect(area, Anchor::TopRight, 12, 1),
+        "combo",
+        &format!("x{}", state.combo),
+        state.frames,
+    );
     cursor_marker(f, area, state.dir, state.cursor, state.frame);
     players_strip(f, anchor_rect(area, Anchor::BottomLeft, 30, 1));
 }
@@ -1200,13 +1269,31 @@ fn layout_bottom_strip(f: &mut Frame, area: Rect, state: &State) {
     let rect = anchor_rect(area, Anchor::BottomCenter, area.width.min(60), 1);
     let line = Line::from(vec![
         Span::styled(" dir ", Style::default().fg(theme::TEXT_DIM)),
-        Span::styled(format!("{} ", state.dir), Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("{} ", state.dir),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("  combo ", Style::default().fg(theme::TEXT_DIM)),
-        Span::styled(format!("x{} ", state.combo), Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD)),
-        Span::styled("  you", Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!("x{} ", state.combo),
+            Style::default()
+                .fg(theme::TEXT)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "  you",
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("(du) rival ", Style::default().fg(theme::TEXT_DIM)),
     ]);
-    f.render_widget(Paragraph::new(line).style(Style::default().bg(theme::PANEL_BG)), rect);
+    f.render_widget(
+        Paragraph::new(line).style(Style::default().bg(theme::PANEL_BG)),
+        rect,
+    );
     cursor_marker(f, area, state.dir, state.cursor, state.frame);
 }
 
@@ -1215,14 +1302,25 @@ fn layout_diegetic(f: &mut Frame, area: Rect, state: &State) {
     f.render_widget(
         Paragraph::new(Line::from(vec![Span::styled(
             format!(" {} ", state.dir),
-            Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Black)
+                .bg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
         )])),
         c,
     );
     if state.combo > 1 {
         f.render_widget(
-            Paragraph::new(Span::styled(format!("x{}", state.combo), Style::default().fg(theme::TEXT_DIM))),
-            Rect { x: area.left() + area.width / 2 - 3, y: area.bottom().saturating_sub(1), width: 6, height: 1 },
+            Paragraph::new(Span::styled(
+                format!("x{}", state.combo),
+                Style::default().fg(theme::TEXT_DIM),
+            )),
+            Rect {
+                x: area.left() + area.width / 2 - 3,
+                y: area.bottom().saturating_sub(1),
+                width: 6,
+                height: 1,
+            },
         );
     }
 }
@@ -1369,7 +1467,10 @@ fn draw_cast_buffer(f: &mut Frame, area: Rect) {
                 .bg(theme::HIGHLIGHT_BG)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled(rest, Style::default().fg(theme::TEXT_DIM).bg(theme::PANEL_BG)),
+        Span::styled(
+            rest,
+            Style::default().fg(theme::TEXT_DIM).bg(theme::PANEL_BG),
+        ),
         Span::styled(" ", Style::default().bg(theme::PANEL_BG)),
     ]);
     f.render_widget(
@@ -1488,7 +1589,9 @@ fn cursor_marker(f: &mut Frame, area: Rect, dir: char, style: CursorStyle, frame
 
 fn chip(f: &mut Frame, rect: Rect, key: &str, val: &str, frames: bool) {
     let inner = if frames {
-        let b = Block::default().borders(Borders::ALL).style(Style::default().fg(theme::TEXT_DIM));
+        let b = Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default().fg(theme::TEXT_DIM));
         let inner = b.inner(rect);
         f.render_widget(b, rect);
         inner
@@ -1497,16 +1600,31 @@ fn chip(f: &mut Frame, rect: Rect, key: &str, val: &str, frames: bool) {
     };
     let line = Line::from(vec![
         Span::styled(format!("{key} "), Style::default().fg(theme::TEXT_DIM)),
-        Span::styled(val.to_string(), Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            val.to_string(),
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
     ]);
     f.render_widget(Paragraph::new(line), inner);
 }
 
 fn players_strip(f: &mut Frame, rect: Rect) {
     let line = Line::from(vec![
-        Span::styled("you", Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "you",
+            Style::default()
+                .fg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled("(du) ", Style::default().fg(theme::TEXT_DIM)),
-        Span::styled("rival ", Style::default().fg(Color::Rgb(0x8A, 0xE2, 0x34)).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "rival ",
+            Style::default()
+                .fg(Color::Rgb(0x8A, 0xE2, 0x34))
+                .add_modifier(Modifier::BOLD),
+        ),
     ]);
     f.render_widget(Paragraph::new(line), rect);
 }
@@ -1561,7 +1679,10 @@ fn rule_line(w: u16) -> Line<'static> {
 
 fn push_desc(spans: &mut Vec<Span<'static>>, desc: &str, fg: Color, bg: Color, show: bool) {
     if show {
-        spans.push(Span::styled(desc.to_string(), Style::default().fg(fg).bg(bg)));
+        spans.push(Span::styled(
+            desc.to_string(),
+            Style::default().fg(fg).bg(bg),
+        ));
     }
 }
 
@@ -1599,7 +1720,13 @@ fn inv_row(
                 Style::default().fg(theme::TEXT).bg(theme::PANEL_BG),
             ),
         ];
-        push_desc(&mut spans, desc, theme::TEXT_DIM, theme::PANEL_BG, show_desc);
+        push_desc(
+            &mut spans,
+            desc,
+            theme::TEXT_DIM,
+            theme::PANEL_BG,
+            show_desc,
+        );
         return Line::from(spans);
     }
     let dim = shadow_active && matches!(state.shadow_style, ShadowStyle::BoxDim);
@@ -1611,9 +1738,18 @@ fn inv_row(
     };
     let mut spans = vec![Span::styled(
         format!(" {name:<8}"),
-        Style::default().fg(name_fg).bg(theme::PANEL_BG).add_modifier(modi),
+        Style::default()
+            .fg(name_fg)
+            .bg(theme::PANEL_BG)
+            .add_modifier(modi),
     )];
-    push_desc(&mut spans, desc, theme::TEXT_DIM, theme::PANEL_BG, show_desc);
+    push_desc(
+        &mut spans,
+        desc,
+        theme::TEXT_DIM,
+        theme::PANEL_BG,
+        show_desc,
+    );
     Line::from(spans)
 }
 
@@ -1636,7 +1772,10 @@ fn animated_pickup_line(
             let pad = " ".repeat(((1.0 - p) * 10.0).round() as usize);
             spans.push(Span::styled(
                 format!("{pad} {name:<8}"),
-                Style::default().fg(fg).bg(panel).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(fg)
+                    .bg(panel)
+                    .add_modifier(Modifier::BOLD),
             ));
             push_desc(&mut spans, desc, fg, panel, show_desc);
         }
@@ -1658,7 +1797,10 @@ fn animated_pickup_line(
             let f = blend(panel, fg, p.max(0.15));
             spans.push(Span::styled(
                 format!(" {name:<8}"),
-                Style::default().fg(f).bg(panel).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(f)
+                    .bg(panel)
+                    .add_modifier(Modifier::BOLD),
             ));
             push_desc(&mut spans, desc, f, panel, show_desc);
         }
@@ -1668,7 +1810,10 @@ fn animated_pickup_line(
             let shown: String = name.chars().take(k).collect();
             spans.push(Span::styled(
                 format!(" {shown}"),
-                Style::default().fg(fg).bg(panel).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(fg)
+                    .bg(panel)
+                    .add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::styled(
                 " ".repeat(8usize.saturating_sub(k)),
@@ -1697,7 +1842,10 @@ fn animated_pickup_line(
                 .collect();
             spans.push(Span::styled(
                 format!(" {s:<8}"),
-                Style::default().fg(fg).bg(panel).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(fg)
+                    .bg(panel)
+                    .add_modifier(Modifier::BOLD),
             ));
             push_desc(&mut spans, desc, fg, panel, show_desc);
         }
@@ -1710,7 +1858,13 @@ fn animated_pickup_line(
                 format!(" {name:<8}"),
                 Style::default().fg(f).bg(bg).add_modifier(Modifier::BOLD),
             ));
-            push_desc(&mut spans, desc, blend(theme::TEXT_DIM, theme::TEXT, flash), bg, show_desc);
+            push_desc(
+                &mut spans,
+                desc,
+                blend(theme::TEXT_DIM, theme::TEXT, flash),
+                bg,
+                show_desc,
+            );
         }
         PickupStyle::BarWipe => {
             // ACCENT-Balken wischt von links weg und gibt den Namen frei.
@@ -1721,9 +1875,15 @@ fn animated_pickup_line(
             let bar = "█".repeat(total - revealed);
             spans.push(Span::styled(
                 format!(" {shown}"),
-                Style::default().fg(theme::TEXT).bg(panel).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::TEXT)
+                    .bg(panel)
+                    .add_modifier(Modifier::BOLD),
             ));
-            spans.push(Span::styled(bar, Style::default().fg(theme::ACCENT).bg(panel)));
+            spans.push(Span::styled(
+                bar,
+                Style::default().fg(theme::ACCENT).bg(panel),
+            ));
             push_desc(&mut spans, desc, theme::TEXT_DIM, panel, show_desc);
         }
         PickupStyle::DoublePulse => {
@@ -1733,7 +1893,10 @@ fn animated_pickup_line(
             let f = blend(theme::TEXT, theme::PICKUP_BASE, pulse);
             spans.push(Span::styled(
                 format!(" {name:<8}"),
-                Style::default().fg(f).bg(panel).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(f)
+                    .bg(panel)
+                    .add_modifier(Modifier::BOLD),
             ));
             push_desc(&mut spans, desc, theme::TEXT_DIM, panel, show_desc);
         }
@@ -1751,7 +1914,13 @@ fn animated_pickup_line(
                 format!(" {name:<8}"),
                 Style::default().fg(f).bg(bg).add_modifier(Modifier::BOLD),
             ));
-            push_desc(&mut spans, desc, blend(theme::TEXT_DIM, theme::TEXT, flash), bg, show_desc);
+            push_desc(
+                &mut spans,
+                desc,
+                blend(theme::TEXT_DIM, theme::TEXT, flash),
+                bg,
+                show_desc,
+            );
         }
     }
     Line::from(spans)
@@ -1784,7 +1953,11 @@ fn item_lines(state: &State, show_desc: bool) -> Vec<Line<'static>> {
 fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
     let skin = state.inv_skin;
     let show_desc = !matches!(skin, InvSkin::Compact);
-    let width: u16 = if matches!(skin, InvSkin::Compact) { 24 } else { 42 };
+    let width: u16 = if matches!(skin, InvSkin::Compact) {
+        24
+    } else {
+        42
+    };
     let inner_w = width.saturating_sub(2);
     let bordered = matches!(
         skin,
@@ -1813,14 +1986,18 @@ fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
                 content.push(blank_line());
                 content.push(Line::from(Span::styled(
                     "  POWERUPS",
-                    Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme::ACCENT)
+                        .add_modifier(Modifier::BOLD),
                 )));
                 content.push(blank_line());
             }
             InvSkin::Minimal => {
                 content.push(Line::from(Span::styled(
                     "  POWERUPS",
-                    Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(theme::ACCENT)
+                        .add_modifier(Modifier::BOLD),
                 )));
                 content.push(rule_line(inner_w));
             }
@@ -1867,7 +2044,9 @@ fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
             .style(Style::default().bg(theme::PANEL_BG))
             .title(Span::styled(
                 title,
-                Style::default().fg(theme::ACCENT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::ACCENT)
+                    .add_modifier(Modifier::BOLD),
             ));
         let inner = block.inner(rect);
         f.render_widget(block, rect);
@@ -1881,7 +2060,9 @@ fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
         if matches!(skin, InvSkin::LeftBar) {
             for y in rect.top()..rect.bottom() {
                 if let Some(c) = f.buffer_mut().cell_mut((rect.left(), y)) {
-                    c.set_char('█').set_fg(theme::ACCENT).set_bg(theme::PANEL_BG);
+                    c.set_char('█')
+                        .set_fg(theme::ACCENT)
+                        .set_bg(theme::PANEL_BG);
                 }
             }
             Rect {
@@ -1976,7 +2157,11 @@ fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
     if let Some(age) = state.dash_fire {
         let p = (age.as_secs_f32() / 0.12).clamp(0.0, 1.0);
         let head = (p * range as f32) as i32;
-        let lo = if state.dash_burst { 0 } else { (head - 2).max(0) };
+        let lo = if state.dash_burst {
+            0
+        } else {
+            (head - 2).max(0)
+        };
         for i in lo..=head {
             let x = center.0 + dx * i;
             let y = center.1 + dy * i;
@@ -2056,7 +2241,10 @@ fn draw_help(f: &mut Frame, area: Rect, state: &State) {
                 format!("b buf:{} ", if state.cast_on { "on" } else { "off" }),
                 Style::default().fg(theme::TEXT_DIM),
             ),
-            Span::styled("· 5 gallery · 6 inv-lab · q", Style::default().fg(theme::TEXT_DIM)),
+            Span::styled(
+                "· 5 gallery · 6 inv-lab · q",
+                Style::default().fg(theme::TEXT_DIM),
+            ),
         ]);
         f.render_widget(Paragraph::new(line).style(bg), rect);
         return;
@@ -2137,7 +2325,9 @@ fn draw_help(f: &mut Frame, area: Rect, state: &State) {
             Span::styled("│ ", Style::default().fg(theme::TEXT_DIM)),
             Span::styled(
                 "◄ ► drehen ",
-                Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme::TEXT)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled("· Enter dash ", Style::default().fg(theme::TEXT)),
             Span::styled(
@@ -2167,15 +2357,39 @@ fn draw_help(f: &mut Frame, area: Rect, state: &State) {
         3 => "3:diegetic",
         _ => "1:corners",
     };
-    let reveal_dim = if state.mode.uses_fx_text() { theme::TEXT } else { theme::TEXT_DIM };
+    let reveal_dim = if state.mode.uses_fx_text() {
+        theme::TEXT
+    } else {
+        theme::TEXT_DIM
+    };
     let line = Line::from(vec![
-        Span::styled(" hud_lab ", Style::default().fg(Color::Black).bg(theme::ACCENT).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " hud_lab ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(theme::ACCENT)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(format!(" {scene} "), Style::default().fg(theme::ACCENT)),
         Span::styled("│ n notif · ", Style::default().fg(theme::TEXT_DIM)),
-        Span::styled(format!("m mode:{} ", state.mode.label()), Style::default().fg(theme::HIGHLIGHT_BG).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("i reveal:{} ", state.reveal.label()), Style::default().fg(reveal_dim)),
-        Span::styled(format!("c cursor:{} ", state.cursor.label()), Style::default().fg(theme::ACCENT)),
-        Span::styled("· 1/2/3/4/6 · v inv · f frames · q", Style::default().fg(theme::TEXT_DIM)),
+        Span::styled(
+            format!("m mode:{} ", state.mode.label()),
+            Style::default()
+                .fg(theme::HIGHLIGHT_BG)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("i reveal:{} ", state.reveal.label()),
+            Style::default().fg(reveal_dim),
+        ),
+        Span::styled(
+            format!("c cursor:{} ", state.cursor.label()),
+            Style::default().fg(theme::ACCENT),
+        ),
+        Span::styled(
+            "· 1/2/3/4/6 · v inv · f frames · q",
+            Style::default().fg(theme::TEXT_DIM),
+        ),
     ]);
     f.render_widget(Paragraph::new(line).style(bg), rect);
 }

@@ -485,7 +485,11 @@ fn shimmer_style(t: f32, i: usize) -> Style {
 fn blend(a: Color, b: Color, t: f32) -> Color {
     let t = t.clamp(0.0, 1.0);
     let rgb = |c: Color| -> (u8, u8, u8) {
-        if let Color::Rgb(r, g, b) = c { (r, g, b) } else { (0, 0, 0) }
+        if let Color::Rgb(r, g, b) = c {
+            (r, g, b)
+        } else {
+            (0, 0, 0)
+        }
     };
     let (ar, ag, ab) = rgb(a);
     let (br, bg, bb) = rgb(b);
@@ -583,7 +587,13 @@ fn draw_dash_beam(
         let (ch, col) = if last {
             ('◎', hsl(hue, 0.6, 0.8))
         } else {
-            let glyph = if dir.1 == 0 { '─' } else if dir.0 == 0 { '│' } else { '·' };
+            let glyph = if dir.1 == 0 {
+                '─'
+            } else if dir.0 == 0 {
+                '│'
+            } else {
+                '·'
+            };
             (glyph, hsl(hue, 0.55, 0.45 + 0.35 * intensity))
         };
         if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
@@ -674,7 +684,11 @@ fn draw_inventory(f: &mut Frame, area: Rect, app: &App) {
                 if matched_names.iter().any(|n| n == &item.name) {
                     // Matched: Prefix als HIGHLIGHT_BG/FG-Kasten, Rest als TEXT.
                     // WICHTIG: Zeichenanzahl bleibt exakt gleich — kein Layout-Shift.
-                    let typed_len = app.cast_buffer.chars().count().min(item.name.chars().count());
+                    let typed_len = app
+                        .cast_buffer
+                        .chars()
+                        .count()
+                        .min(item.name.chars().count());
                     let prefix: String = item.name.chars().take(typed_len).collect();
                     let rest: String = item.name.chars().skip(typed_len).collect();
                     let pad = " ".repeat(8usize.saturating_sub(item.name.chars().count()));
@@ -761,7 +775,9 @@ mod tests {
         // Screen-Transform: (5,-2) - cursor(0,0) + center(40,12) = (45,10).
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        terminal
+            .draw(|f| draw(f, &mut app, Duration::ZERO))
+            .unwrap();
         let buf = terminal.backend().buffer();
         assert_eq!(
             buf.cell((45, 10)).unwrap().symbol(),
@@ -914,7 +930,9 @@ mod tests {
         }
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        terminal
+            .draw(|f| draw(f, &mut app, Duration::ZERO))
+            .unwrap();
         let buf = terminal.backend().buffer();
         // Screen-Transform: (5,-2) - (0,0) + (40,12) = (45,10).
         assert_eq!(
@@ -945,7 +963,9 @@ mod tests {
         app.trace.state = TraceState::Tracing { id, progress: 2 };
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        terminal
+            .draw(|f| draw(f, &mut app, Duration::ZERO))
+            .unwrap();
         let buf = terminal.backend().buffer();
 
         // Screen-Transform: (5,-2) - cursor(0,0) + center(40,12) = (45,10);
@@ -1000,7 +1020,9 @@ mod tests {
         app.trace.state = TraceState::Tracing { id, progress: 2 };
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        terminal
+            .draw(|f| draw(f, &mut app, Duration::ZERO))
+            .unwrap();
         let buf = terminal.backend().buffer();
 
         // Screen-Transform wie oben: physische Tiles 45,46,47,48 für i=0..3.
@@ -1069,7 +1091,9 @@ mod tests {
         app.on_char('d');
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        terminal
+            .draw(|f| draw(f, &mut app, Duration::ZERO))
+            .unwrap();
         let buf = terminal.backend().buffer();
         let found = buf
             .content()
@@ -1097,7 +1121,9 @@ mod tests {
         );
         let backend = TestBackend::new(80, 24);
         let mut terminal = Terminal::new(backend).unwrap();
-        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        terminal
+            .draw(|f| draw(f, &mut app, Duration::ZERO))
+            .unwrap();
         let buf = terminal.backend().buffer();
         // Der Buchstabe 'd' wird im Cursor-Highlight (bg=ACCENT) gezeigt …
         let letter_highlighted = buf
@@ -1146,8 +1172,15 @@ mod tests {
     fn pickup_anim_renders_and_clears_without_panic() {
         use crate::game::powerup::{EffectEvent, EffectTag, Powerup};
         let mut app = App::new_single();
-        app.inventory.add(Powerup { id: 1, name: "dash".into(), effect_tag: EffectTag::Test });
-        app.apply_effect_event(EffectEvent::Pickup { slot: 0, name: "dash".into() });
+        app.inventory.add(Powerup {
+            id: 1,
+            name: "dash".into(),
+            effect_tag: EffectTag::Test,
+        });
+        app.apply_effect_event(EffectEvent::Pickup {
+            slot: 0,
+            name: "dash".into(),
+        });
         let backend = ratatui::backend::TestBackend::new(80, 24);
         let mut terminal = ratatui::Terminal::new(backend).unwrap();
         // mehrere Frames über die Anim-Dauer hinaus — darf nicht paniken, Anim klärt
@@ -1163,8 +1196,16 @@ mod tests {
     fn shadow_highlight_renders_in_cast_mode_without_panic() {
         use crate::game::powerup::{EffectTag, Powerup};
         let mut app = App::new_single();
-        app.inventory.add(Powerup { id: 1, name: "dash".into(), effect_tag: EffectTag::Test });
-        app.inventory.add(Powerup { id: 2, name: "revert".into(), effect_tag: EffectTag::Test });
+        app.inventory.add(Powerup {
+            id: 1,
+            name: "dash".into(),
+            effect_tag: EffectTag::Test,
+        });
+        app.inventory.add(Powerup {
+            id: 2,
+            name: "revert".into(),
+            effect_tag: EffectTag::Test,
+        });
         app.toggle_cast();
         for c in "da".chars() {
             app.on_char(c);
@@ -1197,7 +1238,13 @@ mod dash_render_tests {
         let mut app = App::new();
         let normal = line_text(&controls_line(&app));
         assert!(normal.contains("cast"), "default shows cast hint");
-        app.start_aim("dash", TargetingSpec { dirs: DirSet::Eight, range: 6 });
+        app.start_aim(
+            "dash",
+            TargetingSpec {
+                dirs: DirSet::Eight,
+                range: 6,
+            },
+        );
         let aiming = line_text(&controls_line(&app));
         assert!(aiming.contains("dash"), "aim mode shows dash hint");
         assert!(aiming.contains("drehen"), "aim mode shows rotate hint");
