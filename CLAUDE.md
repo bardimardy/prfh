@@ -149,6 +149,13 @@ Trigger treffen kann.
   (`cargo run --example hud_lab`) explorieren — isolierte, wegwerfbare Sandbox, die
   das Hauptspiel nicht beeinflusst. Skill `visual-companion` kennt Aufbau, Bedienung
   und Erweiterung. Gewählte Variante danach ins Spiel verdrahten.
+- **Skills/Powerups** (#56): Der Skill-Katalog lebt in `src/game/skill.rs`
+  (`SkillDef` mit `rarity_weight` + `Activation::{Instant,Targeted}`, `registry()`
+  als Single Source of Truth, `Aim8` als 8-Wege-Zielvektor). `spawn_powerups`
+  zieht daraus. Gezielte Skills nutzen den generischen Aim-Mode (`App.aim`,
+  Pfeile drehen / Enter feuert / Esc bricht ab); der Vorschau-Strahl ist
+  render-time-Math (`draw_dash_beam`, fg-only wie `draw_cast_ring`). Dash ist
+  vorerst nur `Mode::Single` verdrahtet — MP-Netz-Sync ist ein Follow-up.
 
 ## Spezifikationen
 
