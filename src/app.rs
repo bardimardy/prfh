@@ -1,7 +1,9 @@
 use crate::game::arena::{Arena, EntityKind};
 use crate::game::inventory::Inventory;
 use crate::game::powerup::{EffectTag, Powerup, PowerupWord, ENTRY_SNAP_RADIUS};
-use crate::game::skill::{skill_def, Activation, Aim8, TargetingSpec};
+use crate::game::skill::{
+    dash_settle_at, dash_speed, dash_steps, rand_glyph, skill_def, Activation, Aim8, TargetingSpec,
+};
 use crate::game::world::{PlayerId, PlayerView, WorldView};
 use crate::game::writing::{StepResult, Trace, TraceStep, WritingEngine};
 use crate::hud::notify::{NotificationStack, NotifyKind};
@@ -23,11 +25,29 @@ pub struct AimState {
     pub spec: TargetingSpec,
     pub dir: Aim8,
     pub age: Duration,
+    /// Stack-Count (`×N`) des gezielten Skills, beim Öffnen aus dem Inventar
+    /// gelesen — treibt Länge (`dash_steps`) UND Speed (`dash_speed`) des Dash
+    /// und damit auch die Reichweite des Vorschau-Strahls.
+    pub stack: u32,
 }
 
-/// In-Game-Default-Mechanik des Dash: `false` = Blink/Teleport, `true` =
-/// Trail-Burst. Beide sind im hud_lab A/B-bar; hier einzeilig umschaltbar.
-pub const DASH_DEFAULT_BURST: bool = false;
+/// Laufende Dash-Abschluss-Sequenz: der eigene Trail wurde um `steps` Tiles mit
+/// festen Buchstaben erweitert (ab `start_tick`, einer stabilen Tile-Identität).
+/// Diese Tiles shuffeln render-time und setzen sich gestaffelt (base→tip); die
+/// Aktivierung-am-Ziel feuert ERST bei Abschluss (`activated`). Reiner Animations-
+/// State — die Tiles selbst sind schon ganz normaler Trail.
+pub struct DashFire {
+    pub age: Duration,
+    /// `tick` des ersten Burst-Tiles → Stagger-Index = `tile.tick - start_tick`.
+    pub start_tick: u64,
+    pub steps: i32,
+    /// Stack-Speed-Faktor (>1 = schneller), beschleunigt Settle + Abschluss.
+    pub speed: f32,
+    /// Variiert die Shuffle-Glyphen pro Abschuss (gleicher Seed wie der Burst).
+    pub nonce: u64,
+    /// Ob die Aktivierung-am-Ziel (Cast-Welle) bereits gefeuert hat.
+    pub activated: bool,
+}
 
 impl Default for App {
     fn default() -> Self {
@@ -68,6 +88,8 @@ pub struct App {
     pub pickup_anim: Option<PickupAnim>,
     /// Aktiver Aim-Mode (generisch, von gezielten Skills wie dash genutzt).
     pub aim: Option<AimState>,
+    /// Laufende Dash-Abschluss-Sequenz (Shuffle→Settle→Aktivierung); None = keine.
+    pub dash_fire: Option<DashFire>,
 }
 
 impl App {
@@ -91,6 +113,7 @@ impl App {
             anim_clock: Duration::ZERO,
             pickup_anim: None,
             aim: None,
+            dash_fire: None,
         }
     }
 
@@ -121,6 +144,7 @@ impl App {
             anim_clock: Duration::ZERO,
             pickup_anim: None,
             aim: None,
+            dash_fire: None,
         }
     }
 
@@ -277,17 +301,25 @@ impl App {
         });
     }
 
-    /// Aim-Mode öffnen: Start-Richtung aus der aktuellen Lauf-Richtung.
+    /// Aim-Mode öffnen: Start-Richtung aus der aktuellen Lauf-Richtung. Der
+    /// Stack-Count (`×N`) wird aus dem Inventar gelesen und treibt Länge/Speed
+    /// des Dash (und damit die Reichweite des Vorschau-Strahls).
     pub fn start_aim(&mut self, skill_name: &str, spec: TargetingSpec) {
         let dir = self
             .local_engine()
             .map(|e| Aim8::from_direction(e.direction))
             .unwrap_or(Aim8::E);
+        let stack = self
+            .inventory
+            .get_exact(skill_name)
+            .map(|e| e.count)
+            .unwrap_or(1);
         self.aim = Some(AimState {
             skill_name: skill_name.to_string(),
             spec,
             dir,
             age: Duration::ZERO,
+            stack,
         });
     }
 
@@ -310,25 +342,75 @@ impl App {
         }
     }
 
-    /// Dash abfeuern: Landepunkt = Cursor + Richtung·Range. Default-Mechanik
-    /// Blink (Teleport); `DASH_DEFAULT_BURST` schaltet auf Trail-Burst. Danach
-    /// Lande-Pop (Cast-Welle, render-zentriert auf dem neuen Cursor) + Banner.
+    /// Dash abfeuern (Trail-Burst mit Abschluss-Sequenz): erweitert den eigenen
+    /// Trail um `dash_steps` Tiles mit **festen zufälligen Buchstaben** (kein
+    /// Teleport) und startet die Settle-Sequenz. Der Stack-Count treibt Länge UND
+    /// Speed; der **ganze Stack wird verbraucht** (consume-all). Die Aktivierung-
+    /// am-Ziel feuert ERST bei Abschluss (`advance_dash_fire`), nicht hier.
     pub fn fire_aim(&mut self) {
         let Some(aim) = self.aim.take() else { return };
-        let (dx, dy) = aim.dir.delta();
-        let range = aim.spec.range as i32;
+        let dir = aim.dir.delta();
         let facing = aim.dir.nearest_cardinal();
-        if let Mode::Single(e, _) = &mut self.mode {
-            if DASH_DEFAULT_BURST {
-                e.dash_trail_burst((dx, dy), aim.spec.range, facing);
-            } else {
-                let landing = (e.cursor.0 + dx * range, e.cursor.1 + dy * range);
-                e.dash_blink(landing, facing);
-            }
-        }
+        let stack = aim.stack;
+        let steps = dash_steps(dir, stack);
+        let speed = dash_speed(stack);
+
+        let Mode::Single(e, _) = &mut self.mode else {
+            // Dash im Netz (host-autoritativ) ist ein separates Follow-up (net-sync).
+            return;
+        };
+        // Consume-all: der ganze Stack wird mit dem Cast verbraucht (Eintrag weg).
+        self.inventory.consume(&aim.skill_name);
+        // Feste Ziel-Buchstaben + Shuffle teilen denselben Seed (pro Abschuss neu).
+        let nonce = e.tick.wrapping_mul(0x9E37_79B9).wrapping_add(1);
+        let letters: Vec<char> = (1..=steps)
+            .map(|i| rand_glyph((i as u64).wrapping_mul(0x9E37_79B9) ^ nonce))
+            .collect();
+        let start_tick = e.dash_trail_burst(dir, &letters, facing);
+
+        self.dash_fire = Some(DashFire {
+            age: Duration::ZERO,
+            start_tick,
+            steps,
+            speed,
+            nonce,
+            activated: false,
+        });
         self.notifications
             .push(NotifyKind::Event, "⚡  DASH", aim.skill_name);
-        self.cast_wave = Some(Duration::ZERO);
+        // Bewusst KEINE Cast-Welle hier — die Aktivierung-am-Ziel feuert erst,
+        // wenn der Settle das Ziel erreicht (Aktivierung-bei-Abschluss).
+    }
+
+    /// Schreibt die Dash-Abschluss-Sequenz fort (render-getrieben, wie `cast_wave`).
+    /// Feuert die **Aktivierung-am-Ziel** (Cast-Welle, render-zentriert auf dem
+    /// Cursor = Lande-Tile) GENAU bei Abschluss des Settles — über denselben
+    /// `EffectEvent::Activation`-Seam wie Instant-Skills. Räumt die Sequenz nach
+    /// dem Abklingen der Welle ab. Reine Funktion der Zeit → unit-testbar.
+    pub fn advance_dash_fire(&mut self, dt: Duration) {
+        let (completed_now, expired) = {
+            let Some(df) = self.dash_fire.as_mut() else {
+                return;
+            };
+            df.age += dt;
+            let settled = dash_settle_at(df.steps, df.speed);
+            let t = df.age.as_secs_f32();
+            let completed_now = t >= settled && !df.activated;
+            if completed_now {
+                df.activated = true;
+            }
+            let expired = df.activated && t >= settled + crate::render::RING_DUR;
+            (completed_now, expired)
+        };
+        if completed_now {
+            self.apply_effect_event(crate::game::powerup::EffectEvent::Activation {
+                tag: EffectTag::Dash,
+                name: "dash".into(),
+            });
+        }
+        if expired {
+            self.dash_fire = None;
+        }
     }
 
     /// Single-player local input. (Host/Client routing added in Task 9.)
@@ -575,24 +657,106 @@ mod w3_tests {
         assert_eq!(app.aim.as_ref().unwrap().dir, Aim8::NE); // SE → E → NE
     }
 
+    fn dash_spec() -> TargetingSpec {
+        use crate::game::skill::DirSet;
+        TargetingSpec {
+            dirs: DirSet::Eight,
+            range: 6,
+        }
+    }
+
+    fn give_dash(app: &mut App, n: u32) {
+        use crate::game::powerup::{EffectTag, Powerup};
+        for _ in 0..n {
+            app.inventory.add(Powerup {
+                id: 0,
+                name: "dash".into(),
+                effect_tag: EffectTag::Dash,
+            });
+        }
+    }
+
     #[test]
-    fn fire_aim_blinks_to_landing_clears_aim_and_pops() {
-        use crate::game::skill::{DirSet, TargetingSpec};
+    fn start_aim_reads_stack_count_from_inventory() {
+        let mut app = App::new();
+        give_dash(&mut app, 3);
+        app.start_aim("dash", dash_spec());
+        assert_eq!(app.aim.as_ref().unwrap().stack, 3, "×3 ins Aim übernommen");
+    }
+
+    #[test]
+    fn fire_aim_bursts_trail_with_fixed_letters_and_defers_activation() {
         let mut app = App::new(); // cursor (0,0), facing Right → Aim8::E
-        app.start_aim(
-            "dash",
-            TargetingSpec {
-                dirs: DirSet::Eight,
-                range: 6,
-            },
-        );
+        app.start_aim("dash", dash_spec());
+        let steps = dash_steps((1, 0), 1);
         app.fire_aim();
         assert!(app.aim.is_none(), "aim cleared after firing");
-        assert!(app.cast_wave.is_some(), "landing pop fired");
+        assert!(
+            app.cast_wave.is_none(),
+            "keine sofortige Cast-Welle — Aktivierung ist aufgeschoben"
+        );
+        assert!(app.dash_fire.is_some(), "Abschluss-Sequenz gestartet");
+        let e = app.local_engine().unwrap();
         assert_eq!(
-            app.local_engine().unwrap().cursor,
-            (6, 0),
-            "blinked 6 tiles east"
+            e.trail.len(),
+            steps as usize,
+            "Trail um dash_steps Tiles erweitert (kein Teleport)"
+        );
+        assert_eq!(e.cursor, (steps, 0), "Cursor auf dem Lande-Tile");
+        // Feste Buchstaben aus dem Dash-Glyph-Set (kein Platzhalter-Glyph mehr).
+        assert!(
+            e.trail.iter().all(|t| t.ch != '·' && t.ch != ' '),
+            "Burst-Tiles tragen feste Buchstaben"
+        );
+    }
+
+    #[test]
+    fn higher_stack_makes_a_longer_dash() {
+        let dash_len = |n: u32| {
+            let mut app = App::new();
+            give_dash(&mut app, n);
+            app.start_aim("dash", dash_spec());
+            app.fire_aim();
+            app.local_engine().unwrap().trail.len()
+        };
+        assert!(dash_len(3) > dash_len(1), "×3 dasht weiter als ×1");
+    }
+
+    #[test]
+    fn fire_aim_consumes_the_whole_dash_stack() {
+        let mut app = App::new();
+        give_dash(&mut app, 3);
+        assert_eq!(app.inventory.get_exact("dash").unwrap().count, 3);
+        app.start_aim("dash", dash_spec());
+        app.fire_aim();
+        assert!(
+            app.inventory.get_exact("dash").is_none(),
+            "consume-all: ganzer Stack weg, Eintrag entfernt"
+        );
+    }
+
+    #[test]
+    fn dash_activation_fires_at_completion_not_before() {
+        let mut app = App::new();
+        app.start_aim("dash", dash_spec());
+        app.fire_aim();
+        assert!(app.cast_wave.is_none(), "vor Abschluss: keine Aktivierung");
+
+        // Ein kleiner Tick (deutlich vor dem Settle-Abschluss) feuert noch nichts.
+        app.advance_dash_fire(Duration::from_millis(30));
+        assert!(
+            app.cast_wave.is_none(),
+            "Aktivierung erst bei Abschluss, nicht beim Cast"
+        );
+
+        // Knapp über den Abschluss-Zeitpunkt → Aktivierung-am-Ziel (Cast-Welle).
+        let steps = dash_steps((1, 0), 1);
+        let settled = dash_settle_at(steps, dash_speed(1));
+        app.advance_dash_fire(Duration::from_secs_f32(settled + 0.01));
+        assert!(app.cast_wave.is_some(), "Aktivierung feuert bei Abschluss");
+        assert!(
+            app.dash_fire.as_ref().is_some_and(|d| d.activated),
+            "Sequenz als aktiviert markiert"
         );
     }
 

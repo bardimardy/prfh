@@ -105,6 +105,20 @@ pub fn dash_speed(stack: u32) -> f32 {
     1.0 + 0.3 * (stack.saturating_sub(1)) as f32
 }
 
+// Dash-Abschluss-Timeline (Sekunden ab Cast), Stack-Speed-skaliert:
+/// Zeitpunkt, zu dem das erste (base-nahe) Tile aufhört zu shuffeln und einrastet.
+pub const DASH_SETTLE_BASE: f32 = 0.28;
+/// Versatz pro Tile — die Tiles setzen sich gestaffelt base→tip.
+pub const DASH_SETTLE_STAGGER: f32 = 0.05;
+
+/// Settle-Zeitpunkt (s ab Cast) für das `i`-te Dash-Tile (i=1 base … i=steps tip),
+/// durch den Stack-`speed` beschleunigt. `dash_settle_at(steps, speed)` ist der
+/// **Skill-Abschluss** → Auslöser der Aktivierung-am-Ziel. Reine Funktion →
+/// scroll-immun + unit-testbar (geteilt von App-Advance und Settle-Render).
+pub fn dash_settle_at(i: i32, speed: f32) -> f32 {
+    (DASH_SETTLE_BASE + i as f32 * DASH_SETTLE_STAGGER) / speed.max(0.001)
+}
+
 /// Skill per Name (case-insensitiv) nachschlagen.
 pub fn skill_def(name: &str) -> Option<&'static SkillDef> {
     registry()
@@ -226,6 +240,18 @@ mod tests {
     fn dash_speed_grows_with_stack_and_base_is_one() {
         assert_eq!(dash_speed(1), 1.0);
         assert!(dash_speed(3) > dash_speed(1));
+    }
+
+    #[test]
+    fn dash_settle_staggers_base_before_tip() {
+        // Späteres (tip-näheres) Tile rastet später ein als ein früheres (base).
+        assert!(dash_settle_at(5, 1.0) > dash_settle_at(1, 1.0));
+    }
+
+    #[test]
+    fn dash_settle_is_faster_at_higher_speed() {
+        // Mehr Stack-Speed → früherer Abschluss (kürzere Settle-Zeit).
+        assert!(dash_settle_at(6, 2.0) < dash_settle_at(6, 1.0));
     }
 
     #[test]

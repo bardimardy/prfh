@@ -42,6 +42,9 @@ pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
     }
     app.advance_pickup_anim(elapsed);
     app.advance_aim(elapsed);
+    // Dash-Abschluss-Sequenz altern + Aktivierung-am-Ziel bei Abschluss feuern
+    // (setzt ggf. `cast_wave` — daher VOR dem Auslesen von `cast_wave` unten).
+    app.advance_dash_fire(elapsed);
 
     let area = f.area();
     let world = app.world_view();
@@ -429,8 +432,10 @@ fn draw_world(
     f.render_widget(Paragraph::new(lines), area);
 }
 
-/// Dauer der Cast-Ring-Animation (Sekunden) — snappy/dynamisch.
-const RING_DUR: f32 = 0.38;
+/// Dauer der Cast-Ring-Animation (Sekunden) — snappy/dynamisch. Auch von
+/// `App::advance_dash_fire` genutzt, um die Settle-Sequenz nach der Cast-Welle
+/// am Ziel abzuräumen.
+pub const RING_DUR: f32 = 0.38;
 
 /// Breite des (immer sichtbaren) Inventar-Panels oben-rechts. Auch von `draw_hud`
 /// referenziert, damit die combo-Anzeige links daneben weicht statt verdeckt zu
