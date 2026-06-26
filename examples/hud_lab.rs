@@ -744,6 +744,12 @@ struct State {
     shadow_style: ShadowStyle,
     shadow_len: usize, // getippte Prefix-Länge gegen "dash" (0..=4)
     inv_anchor: InvAnchor,
+    // Dash-Aim-Szene (Szene 7)
+    dash_dir: prfh::game::skill::Aim8,
+    dash_age: Duration,
+    dash_burst: bool,              // false = Blink, true = Trail-Burst
+    dash_beam_style: u8,           // 0..=2, A/B der Strahl-Stile
+    dash_fire: Option<Duration>,   // Abfeuer-Anim-Alter
 }
 
 impl State {
@@ -776,6 +782,11 @@ impl State {
             shadow_style: ShadowStyle::BoxDim,
             shadow_len: 0,
             inv_anchor: InvAnchor::TopRight,
+            dash_dir: prfh::game::skill::Aim8::E,
+            dash_age: Duration::ZERO,
+            dash_burst: false,
+            dash_beam_style: 0,
+            dash_fire: None,
         }
     }
 
@@ -878,6 +889,14 @@ impl State {
                 self.pickup_anim = None;
             }
         }
+        // Dash-Aim-Szene: Richtungszeiger + Abfeuer-Anim altern.
+        self.dash_age += dt;
+        if let Some(age) = self.dash_fire.as_mut() {
+            *age += dt;
+            if age.as_secs_f32() > 0.6 {
+                self.dash_fire = None;
+            }
+        }
         // Sanfter Auto-Replay in der finalen Cast-Szene: ~1.3 s Pause zwischen
         // Wellen, damit man den Look ohne Tastendruck im Loop sieht.
         if self.scene == 4 {
@@ -926,6 +945,7 @@ fn main() -> io::Result<()> {
                             state.scene = 6;
                             state.enter_inventory_scene();
                         }
+                        KeyCode::Char('7') => state.scene = 7,
                         KeyCode::Char('g') => state.fire_pickup(),
                         KeyCode::Char('x') => state.clear_inventory(),
                         KeyCode::Char('j') => state.pickup_style = state.pickup_style.next(),
@@ -937,8 +957,20 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('o') => state.word_axis = state.word_axis.next(),
                         KeyCode::Char('t') => state.advance_trace(),
                         KeyCode::Char('w') => state.fire_wave(),
-                        KeyCode::Char('s') => state.cast_style = state.cast_style.next(),
-                        KeyCode::Char('b') => state.cast_on = !state.cast_on,
+                        KeyCode::Char('s') => {
+                            if state.scene == 7 {
+                                state.dash_beam_style = (state.dash_beam_style + 1) % 3;
+                            } else {
+                                state.cast_style = state.cast_style.next();
+                            }
+                        }
+                        KeyCode::Char('b') => {
+                            if state.scene == 7 {
+                                state.dash_burst = !state.dash_burst;
+                            } else {
+                                state.cast_on = !state.cast_on;
+                            }
+                        }
                         KeyCode::Char('n') => state.fire(),
                         KeyCode::Char('m') => state.mode = state.mode.next(),
                         KeyCode::Char('i') => state.reveal = state.reveal.next(),
@@ -947,8 +979,25 @@ fn main() -> io::Result<()> {
                         KeyCode::Char('f') => state.frames = !state.frames,
                         KeyCode::Up => state.dir = '↑',
                         KeyCode::Down => state.dir = '↓',
-                        KeyCode::Left => state.dir = '←',
-                        KeyCode::Right => state.dir = '→',
+                        KeyCode::Left => {
+                            if state.scene == 7 {
+                                state.dash_dir = state.dash_dir.rotate(false);
+                            } else {
+                                state.dir = '←';
+                            }
+                        }
+                        KeyCode::Right => {
+                            if state.scene == 7 {
+                                state.dash_dir = state.dash_dir.rotate(true);
+                            } else {
+                                state.dir = '→';
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if state.scene == 7 {
+                                state.dash_fire = Some(Duration::ZERO);
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -971,6 +1020,7 @@ fn ui(f: &mut Frame, state: &mut State, dt: Duration) {
         4 => layout_powerup(f, area, state, dt),
         5 => layout_gallery(f, area, state),
         6 => {} // Inventar-Lab: nur Welt-BG + Overlay + Hilfe (Panel via inv_open)
+        7 => layout_dash_aim(f, area, state),
         _ => layout_corners(f, area, state),
     }
     draw_notifications(f, area, state, dt);
@@ -1852,6 +1902,109 @@ fn draw_inventory(f: &mut Frame, area: Rect, state: &mut State, dt: Duration) {
     state.inv_effect.process(dt.into(), f.buffer_mut(), rect);
 }
 
+/// Szene 7 — Dash-Aim: 8-Richtungs-Rotation, beide Dash-Mechaniken (Blink vs.
+/// Trail-Burst) und 3 Vorschau-Strahl-Stile im A/B-Vergleich. Die Kamera ist
+/// FEST — so ist der Streak über das Feld als Demo sichtbar.
+fn layout_dash_aim(f: &mut Frame, area: Rect, state: &State) {
+    use ratatui::style::Color;
+    let buf = f.buffer_mut();
+    let center = (
+        area.left() as i32 + area.width as i32 / 3,
+        area.top() as i32 + area.height as i32 / 2,
+    );
+    let (dx, dy) = state.dash_dir.delta();
+    let range: i32 = 6;
+
+    // Vorschau-Strahl (3 Stile per `s`).
+    if state.dash_fire.is_none() {
+        for i in 1..=range {
+            let x = center.0 + dx * i;
+            let y = center.1 + dy * i;
+            if x < area.left() as i32
+                || x >= area.right() as i32
+                || y < area.top() as i32
+                || y >= area.bottom() as i32
+            {
+                continue;
+            }
+            let t = state.dash_age.as_secs_f32();
+            let pulse = 0.5 + 0.5 * (i as f32 * 0.6 - t * 6.0).sin();
+            let last = i == range;
+            let (ch, col) = match state.dash_beam_style {
+                0 => {
+                    // Flowing Gradient Pulse
+                    let hue = 200.0 + i as f32 * 8.0 + t * 60.0;
+                    let l = 0.45 + 0.35 * pulse;
+                    (
+                        if last {
+                            '◎'
+                        } else if dy == 0 {
+                            '─'
+                        } else if dx == 0 {
+                            '│'
+                        } else {
+                            '·'
+                        },
+                        hsl(hue, 0.55, if last { 0.8 } else { l }),
+                    )
+                }
+                1 => {
+                    // Charging Sweep: heller Kopf wandert
+                    let head = ((t * 8.0) as i32 % range) + 1;
+                    let bright = if i == head { 1.0 } else { 0.25 };
+                    ('=', hsl(190.0, 0.5, 0.35 + 0.5 * bright))
+                }
+                _ => {
+                    // Shimmer/Laser: stabil + Funkeln
+                    let hsh = (x as u64)
+                        .wrapping_mul(2_654_435_761)
+                        .wrapping_add(state.dash_age.as_millis() as u64);
+                    let spark = (hsh % 7) < 1;
+                    (
+                        if last { '◎' } else { '─' },
+                        hsl(330.0, 0.5, if spark { 0.9 } else { 0.5 }),
+                    )
+                }
+            };
+            if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
+                cell.set_char(ch).set_fg(col);
+            }
+        }
+    }
+
+    // Abfeuer-Anim: Math-Streak (Blink: Geist-Spur; Burst: voller Trail).
+    if let Some(age) = state.dash_fire {
+        let p = (age.as_secs_f32() / 0.12).clamp(0.0, 1.0);
+        let head = (p * range as f32) as i32;
+        let lo = if state.dash_burst { 0 } else { (head - 2).max(0) };
+        for i in lo..=head {
+            let x = center.0 + dx * i;
+            let y = center.1 + dy * i;
+            if x < area.left() as i32
+                || x >= area.right() as i32
+                || y < area.top() as i32
+                || y >= area.bottom() as i32
+            {
+                continue;
+            }
+            let bright = if state.dash_burst {
+                0.8
+            } else {
+                1.0 - (head - i) as f32 * 0.3
+            };
+            let col = hsl(50.0, 0.7, (0.4 + 0.5 * bright).clamp(0.0, 1.0));
+            if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
+                cell.set_char('•').set_fg(col);
+            }
+        }
+    }
+
+    // Spieler-Glyph an center.
+    if let Some(cell) = buf.cell_mut((center.0 as u16, center.1 as u16)) {
+        cell.set_char('@').set_fg(Color::White);
+    }
+}
+
 fn draw_help(f: &mut Frame, area: Rect, state: &State) {
     let rect = Rect {
         x: area.left(),
@@ -1969,6 +2122,41 @@ fn draw_help(f: &mut Frame, area: Rect, state: &State) {
                 "· 4 powerup-szene · 1/2/3 · q",
                 Style::default().fg(theme::TEXT_DIM),
             ),
+        ]);
+        f.render_widget(Paragraph::new(line).style(bg), rect);
+        return;
+    }
+
+    if state.scene == 7 {
+        let mech = if state.dash_burst { "burst" } else { "blink" };
+        let beam_labels = ["gradient", "charging", "shimmer"];
+        let beam = beam_labels[state.dash_beam_style as usize];
+        let line = Line::from(vec![
+            tag("hud_lab"),
+            Span::styled(" 7:dash-aim ", Style::default().fg(theme::ACCENT)),
+            Span::styled("│ ", Style::default().fg(theme::TEXT_DIM)),
+            Span::styled(
+                "◄ ► drehen ",
+                Style::default().fg(theme::TEXT).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("· Enter dash ", Style::default().fg(theme::TEXT)),
+            Span::styled(
+                format!("b mech:{mech} "),
+                Style::default()
+                    .fg(theme::HIGHLIGHT_BG)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("s strahl:{beam} "),
+                Style::default()
+                    .fg(theme::PICKUP_BASE)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("dir:{:?} ", state.dash_dir),
+                Style::default().fg(theme::ACCENT),
+            ),
+            Span::styled("· 1/2/3/4/6 · q", Style::default().fg(theme::TEXT_DIM)),
         ]);
         f.render_widget(Paragraph::new(line).style(bg), rect);
         return;
