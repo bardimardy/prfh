@@ -249,8 +249,8 @@ impl App {
             e.on_char(c);
         }
         self.cast_buffer.push(c);
-        if let Some(p) = self.inventory.get_exact(&self.cast_buffer).cloned() {
-            self.dispatch_cast(p.effect_tag, &p.name);
+        if let Some(entry) = self.inventory.get_exact(&self.cast_buffer).cloned() {
+            self.dispatch_cast(entry.powerup.effect_tag, &entry.powerup.name);
             self.cast_mode = false;
             self.cast_buffer.clear();
             self.cast_start_tick = None;
@@ -402,7 +402,9 @@ impl App {
                 let effect_tag = crate::game::skill::skill_def(&name)
                     .map(|d| d.effect_tag)
                     .unwrap_or(EffectTag::Test);
-                self.inventory.add(Powerup {
+                // `add` stackt stackbare Skills auf einen bestehenden Eintrag und
+                // liefert dessen Slot-Index zurück (bei Nicht-Stack: die neue Zeile).
+                let slot = self.inventory.add(Powerup {
                     id,
                     name: name.clone(),
                     effect_tag,
@@ -410,8 +412,7 @@ impl App {
                 self.notifications
                     .push(NotifyKind::Event, "✦  PICKUP", name.clone());
                 // Host-autoritatives Event → lokale render-time-Pickup-Anim auf der
-                // gerade hinzugefügten Zeile (Design §3.1). Slot = letzter Index.
-                let slot = self.inventory.len() - 1;
+                // betroffenen Zeile (Design §3.1).
                 deferred_ev = Some(crate::game::powerup::EffectEvent::Pickup { slot, name });
             } else {
                 // Bestehende Turn/Stop-Notifications nur, wenn kein Pickup lief.
@@ -669,7 +670,7 @@ mod w2_tests {
             app.on_char(ch);
         }
         assert_eq!(app.inventory.len(), 1, "dash should be collected");
-        assert_eq!(app.inventory.items[0].name, "dash");
+        assert_eq!(app.inventory.items[0].powerup.name, "dash");
         assert!(app.arena().entities.is_empty(), "picked-up word despawns");
     }
 
@@ -836,7 +837,7 @@ mod w2_tests {
             app.on_char(ch);
         }
         assert_eq!(app.inventory.len(), 1, "Snap sollte das Andocken erlauben");
-        assert_eq!(app.inventory.items[0].name, "dash");
+        assert_eq!(app.inventory.items[0].powerup.name, "dash");
         assert!(app.arena().entities.is_empty(), "Wort despawnt nach Pickup");
     }
 
@@ -847,6 +848,6 @@ mod w2_tests {
         for ch in "xxxdash".chars() {
             app.on_char(ch);
         }
-        assert_eq!(app.inventory.items[0].effect_tag, EffectTag::Dash);
+        assert_eq!(app.inventory.items[0].powerup.effect_tag, EffectTag::Dash);
     }
 }

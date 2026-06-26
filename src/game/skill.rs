@@ -36,6 +36,9 @@ pub struct SkillDef {
     pub rarity_weight: f32,
     pub effect_tag: EffectTag,
     pub activation: Activation,
+    /// Ob sich mehrere Pickups dieses Skills zu EINEM Inventar-Eintrag mit Count
+    /// (`×N`) stapeln (`dash`) — oder jedes Pickup eine eigene Zeile bekommt.
+    pub stackable: bool,
 }
 
 /// Der Katalog. Heute: `dash` (gezielt, 8 Richtungen, feste Distanz 6),
@@ -51,20 +54,55 @@ pub fn registry() -> &'static [SkillDef] {
                 dirs: DirSet::Eight,
                 range: 6,
             }),
+            stackable: true,
         },
         SkillDef {
             name: "revert",
             rarity_weight: 0.6,
             effect_tag: EffectTag::Test,
             activation: Activation::Instant,
+            stackable: false,
         },
         SkillDef {
             name: "warp",
             rarity_weight: 0.3,
             effect_tag: EffectTag::Test,
             activation: Activation::Instant,
+            stackable: false,
         },
     ]
+}
+
+/// Glyph-Alphabet des Dash-Strahls/Trails: code-artige Zeichen, in die sich der
+/// Trail nach dem Settle „einfriert" (und aus denen der Shuffle zufällig zieht).
+pub const DASH_GLYPHS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789{}[]<>/=+*&^%$#";
+
+/// Deterministischer „Zufalls"-Glyph aus einem Seed (kein rng nötig → stabil pro
+/// Frame-Bucket, reproduzierbar). Geteilt von Trail-Burst (feste Buchstaben),
+/// Settle-Shuffle und Vorschau-Strahl.
+pub fn rand_glyph(seed: u64) -> char {
+    let h = seed
+        .wrapping_mul(2_654_435_761)
+        .wrapping_add(0x9E37_79B9_7F4A_7C15);
+    DASH_GLYPHS[(h % DASH_GLYPHS.len() as u64) as usize] as char
+}
+
+/// Aspekt-normierte Schritt-Anzahl (Tiles) des Dash für eine Richtung: vertikale
+/// Zellen zählen ~2× (2:1-Zellaspekt, wie der Cast-Ring), damit ALLE 8 Richtungen
+/// visuell gleich weit reichen. Die Reichweite skaliert mit dem Stack-Count
+/// (`stack`) — der `×N`-Identifier treibt die Länge des Dash.
+pub fn dash_steps(dir: (i32, i32), stack: u32) -> i32 {
+    let beam_reach = 14.0 + 10.0 * stack as f32; // länger pro Stack
+    let step_len = (((dir.0 * dir.0) + (2 * dir.1) * (2 * dir.1)) as f32)
+        .sqrt()
+        .max(1.0);
+    (beam_reach / step_len).round().max(1.0) as i32
+}
+
+/// Speed-Faktor aus dem Stack-Count: mehr Stacks → schnellerer Dash (kürzere
+/// Extend-/Settle-Zeiten). Stack 1 → 1.0 (Basis-Tempo).
+pub fn dash_speed(stack: u32) -> f32 {
+    1.0 + 0.3 * (stack.saturating_sub(1)) as f32
 }
 
 /// Skill per Name (case-insensitiv) nachschlagen.
@@ -156,6 +194,45 @@ mod tests {
     #[test]
     fn every_skill_has_a_positive_rarity_weight() {
         assert!(registry().iter().all(|d| d.rarity_weight > 0.0));
+    }
+
+    #[test]
+    fn dash_is_stackable_others_are_not() {
+        assert!(skill_def("dash").unwrap().stackable, "dash stacks (×N)");
+        assert!(!skill_def("revert").unwrap().stackable);
+        assert!(!skill_def("warp").unwrap().stackable);
+    }
+
+    #[test]
+    fn dash_steps_scale_with_stack() {
+        // Mehr Stack → längerer Dash (monoton wachsend, gleiche Richtung).
+        let s1 = dash_steps((1, 0), 1);
+        let s3 = dash_steps((1, 0), 3);
+        assert!(s3 > s1, "×3 reicht weiter als ×1 ({s3} > {s1})");
+    }
+
+    #[test]
+    fn dash_steps_are_aspect_normalized_equal_reach() {
+        // 2:1-Zellaspekt: vertikale Schritte zählen doppelt → vertikal ~halb so
+        // viele Tiles wie horizontal, damit der Strahl visuell gleich weit reicht.
+        let horiz = dash_steps((1, 0), 1);
+        let vert = dash_steps((0, 1), 1);
+        assert!(vert < horiz, "vertikal weniger Tiles als horizontal");
+        // Grob doppelt so viele horizontale wie vertikale Tiles.
+        assert!((horiz as f32 / vert as f32 - 2.0).abs() < 0.4);
+    }
+
+    #[test]
+    fn dash_speed_grows_with_stack_and_base_is_one() {
+        assert_eq!(dash_speed(1), 1.0);
+        assert!(dash_speed(3) > dash_speed(1));
+    }
+
+    #[test]
+    fn rand_glyph_is_deterministic_in_charset() {
+        assert_eq!(rand_glyph(42), rand_glyph(42), "selber Seed → selber Glyph");
+        let g = rand_glyph(7);
+        assert!(DASH_GLYPHS.contains(&(g as u8)), "Glyph aus dem Charset");
     }
 
     #[test]

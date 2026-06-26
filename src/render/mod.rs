@@ -670,7 +670,7 @@ fn draw_inventory(f: &mut Frame, area: Rect, app: &App) {
             app.inventory
                 .prefix_matches(&app.cast_buffer)
                 .into_iter()
-                .map(|p| p.name.clone())
+                .map(|e| e.powerup.name.clone())
                 .collect()
         } else {
             Vec::new()
@@ -681,17 +681,17 @@ fn draw_inventory(f: &mut Frame, area: Rect, app: &App) {
             // PRÄZEDENZ: Cast-Modus hat Vorrang vor Pickup-Anim.
             let line = if app.cast_mode {
                 // Shadow-Autocomplete-Highlight (box+dim, Companion Szene 6 `BoxDim`).
-                if matched_names.iter().any(|n| n == &item.name) {
+                if matched_names.iter().any(|n| n == &item.powerup.name) {
                     // Matched: Prefix als HIGHLIGHT_BG/FG-Kasten, Rest als TEXT.
                     // WICHTIG: Zeichenanzahl bleibt exakt gleich — kein Layout-Shift.
                     let typed_len = app
                         .cast_buffer
                         .chars()
                         .count()
-                        .min(item.name.chars().count());
-                    let prefix: String = item.name.chars().take(typed_len).collect();
-                    let rest: String = item.name.chars().skip(typed_len).collect();
-                    let pad = " ".repeat(8usize.saturating_sub(item.name.chars().count()));
+                        .min(item.powerup.name.chars().count());
+                    let prefix: String = item.powerup.name.chars().take(typed_len).collect();
+                    let rest: String = item.powerup.name.chars().skip(typed_len).collect();
+                    let pad = " ".repeat(8usize.saturating_sub(item.powerup.name.chars().count()));
                     Line::from(vec![
                         Span::styled(" ", Style::default().bg(theme::PANEL_BG)),
                         Span::styled(
@@ -709,15 +709,15 @@ fn draw_inventory(f: &mut Frame, area: Rect, app: &App) {
                 } else {
                     // Nicht gematcht: gedimmt (TEXT_DIM, kein BOLD).
                     Line::from(Span::styled(
-                        format!(" {:<8}", item.name),
+                        format!(" {:<8}", item.powerup.name),
                         Style::default().fg(theme::TEXT_DIM).bg(theme::PANEL_BG),
                     ))
                 }
             } else if let Some(anim) = app.pickup_anim.as_ref().filter(|a| a.slot == slot) {
-                popup_pulse_line(&item.name, anim.age)
+                popup_pulse_line(&item.powerup.name, anim.age)
             } else {
                 Line::from(Span::styled(
-                    format!(" {:<8}", item.name),
+                    format!(" {:<8}", item.powerup.name),
                     Style::default()
                         .fg(theme::TEXT)
                         .bg(theme::PANEL_BG)
