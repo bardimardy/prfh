@@ -19,8 +19,8 @@ impl Axis {
     }
 }
 
-/// Fachlicher Effekt-Tag eines Powerups. Der Cast-Dispatch matcht darauf.
-/// Vorerst nur das Test-Powerup; additiv erweiterbar (Dash, Revert, …).
+/// Fachlicher Effekt-Tag eines Powerups. Der Cast-Dispatch matcht darauf;
+/// `spawn_powerups` mappt Registry-Skills eins-zu-eins auf diesen Tag.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EffectTag {
     Test,
@@ -166,25 +166,34 @@ impl PowerupWord {
     }
 }
 
-/// Platziert die feste Start-Menge Powerup-Wörter in die Arena. Host-autoritativer
-/// Andockpunkt für spätere prozedurale Generierung (Welt-Spec §4). `dash` horizontal,
-/// `revert` vertikal, `warp` horizontal reversed — gestreut, vom Start (0,0) weg.
+/// Platziert die Start-Menge Powerup-Wörter in die Arena. Welche Skills
+/// existieren, kommt aus `skill::registry()` (Single Source of Truth); die
+/// Platzierung (Origin/Achse/Reversed) ist die feste Seed-Tabelle — Andockpunkt
+/// für spätere prozedurale, `rarity_weight`-gewichtete Generierung (Welt-Spec §4).
 pub fn spawn_powerups(arena: &mut Arena) {
-    let seed = [
-        ("dash", (6, 0), Axis::Horizontal, false),
-        ("revert", (0, 5), Axis::Vertical, false),
-        ("warp", (-12, 3), Axis::Horizontal, true),
-    ];
-    for (name, origin, axis, reversed) in seed {
-        arena.spawn(
-            origin,
-            EntityKind::PowerupWord(PowerupWord {
-                name: name.into(),
+    for def in crate::game::skill::registry() {
+        if let Some((origin, axis, reversed)) = seed_placement(def.name) {
+            arena.spawn(
                 origin,
-                axis,
-                reversed,
-            }),
-        );
+                EntityKind::PowerupWord(PowerupWord {
+                    name: def.name.into(),
+                    origin,
+                    axis,
+                    reversed,
+                }),
+            );
+        }
+    }
+}
+
+/// Feste Seed-Platzierung pro Skill-Name (gestreut, vom Start (0,0) weg).
+/// Skills ohne Eintrag werden (noch) nicht auf der Map geseedet.
+fn seed_placement(name: &str) -> Option<((i32, i32), Axis, bool)> {
+    match name {
+        "dash" => Some(((6, 0), Axis::Horizontal, false)),
+        "revert" => Some(((0, 5), Axis::Vertical, false)),
+        "warp" => Some(((-12, 3), Axis::Horizontal, true)),
+        _ => None,
     }
 }
 

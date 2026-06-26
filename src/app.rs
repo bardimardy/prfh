@@ -329,10 +329,13 @@ impl App {
             // Single despawnt direkt die lokale Arena).
             if let Some((id, name)) = pickup {
                 arena.despawn(id);
+                let effect_tag = crate::game::skill::skill_def(&name)
+                    .map(|d| d.effect_tag.clone())
+                    .unwrap_or(EffectTag::Test);
                 self.inventory.add(Powerup {
                     id,
                     name: name.clone(),
-                    effect_tag: EffectTag::Test,
+                    effect_tag,
                 });
                 self.notifications.push(NotifyKind::Event, "✦  PICKUP", name.clone());
                 // Host-autoritatives Event → lokale render-time-Pickup-Anim auf der
@@ -640,5 +643,15 @@ mod w2_tests {
         assert_eq!(app.inventory.len(), 1, "Snap sollte das Andocken erlauben");
         assert_eq!(app.inventory.items[0].name, "dash");
         assert!(app.arena().entities.is_empty(), "Wort despawnt nach Pickup");
+    }
+
+    #[test]
+    fn picking_up_dash_stores_the_dash_effect_tag() {
+        let mut app = App::new();
+        spawn_dash(&mut app);
+        for ch in "xxxdash".chars() {
+            app.on_char(ch);
+        }
+        assert_eq!(app.inventory.items[0].effect_tag, EffectTag::Dash);
     }
 }
