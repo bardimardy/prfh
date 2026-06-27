@@ -100,9 +100,12 @@ pub fn dash_steps(dir: (i32, i32), stack: u32) -> i32 {
 }
 
 /// Speed-Faktor aus dem Stack-Count: mehr Stacks → schnellerer Dash (kürzere
-/// Extend-/Settle-Zeiten). Stack 1 → 1.0 (Basis-Tempo).
+/// Settle-Zeit + frühere Aktivierung). Der Cursor springt ohnehin sofort; dieser
+/// Faktor bestimmt, wie schnell die Abschluss-Sequenz einrastet. Bewusst hohes
+/// Basis-Tempo (#58-Balance), damit der Dash als snappy Burst klar schneller wirkt
+/// als normales Schreiben — ein echter Vorteil statt langsamer „Materialisierung".
 pub fn dash_speed(stack: u32) -> f32 {
-    1.0 + 0.3 * (stack.saturating_sub(1)) as f32
+    2.5 + 0.6 * (stack.saturating_sub(1)) as f32
 }
 
 // Dash-Abschluss-Timeline (Sekunden ab Cast), Stack-Speed-skaliert:
@@ -237,8 +240,10 @@ mod tests {
     }
 
     #[test]
-    fn dash_speed_grows_with_stack_and_base_is_one() {
-        assert_eq!(dash_speed(1), 1.0);
+    fn dash_speed_is_snappy_and_grows_with_stack() {
+        // Hohes Basis-Tempo (#58-Balance): der Dash rastet deutlich schneller ein
+        // als normales Schreiben es einholen könnte, und skaliert mit dem Stack.
+        assert!(dash_speed(1) >= 2.0, "Basis-Tempo snappy genug");
         assert!(dash_speed(3) > dash_speed(1));
     }
 
