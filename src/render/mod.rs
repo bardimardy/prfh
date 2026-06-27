@@ -42,6 +42,9 @@ pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
     }
     app.advance_pickup_anim(elapsed);
     app.advance_aim(elapsed);
+    // Dash-Abschluss-Sequenz altern + Aktivierung-am-Ziel bei Abschluss feuern
+    // (setzt ggf. `cast_wave` — daher VOR dem Auslesen von `cast_wave` unten).
+    app.advance_dash_fire(elapsed);
 
     let area = f.area();
     let world = app.world_view();
@@ -61,6 +64,11 @@ pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
     };
 
     draw_world(f, area, &world, app.arena(), clock, trace, cast_from);
+    // Dash-Settle-Overlay: shuffelt/setzt die Burst-Trail-Tiles (über demselben
+    // Welt-Layer, fg-only) — render-time-Math über die Tile-Identität, scroll-immun.
+    if let Some(df) = app.dash_fire.as_ref() {
+        draw_dash_settle(f.buffer_mut(), area, &world, df);
+    }
     draw_hud(f, area, app, &world);
 
     // Notifications oben-mitte, über der Welt (mutabel: halten ihre Effekte).
@@ -75,14 +83,10 @@ pub fn draw(f: &mut Frame, app: &mut App, elapsed: Duration) {
 
     if let Some(aim) = app.aim.as_ref() {
         let center = ((area.width / 2) as i32, (area.height / 2) as i32);
-        draw_dash_beam(
-            f.buffer_mut(),
-            center,
-            aim.dir.delta(),
-            aim.spec.range,
-            aim.age,
-            area,
-        );
+        // Reichweite = aspekt-normierte Schritte für den aktuellen Stack-Count
+        // (alle 8 Richtungen visuell gleich weit; Länge skaliert mit ×N).
+        let steps = crate::game::skill::dash_steps(aim.dir.delta(), aim.stack);
+        draw_dash_beam(f.buffer_mut(), center, aim.dir.delta(), steps, aim.age, area);
     }
 
     draw_inventory(f, area, app);
@@ -429,8 +433,10 @@ fn draw_world(
     f.render_widget(Paragraph::new(lines), area);
 }
 
-/// Dauer der Cast-Ring-Animation (Sekunden) — snappy/dynamisch.
-const RING_DUR: f32 = 0.38;
+/// Dauer der Cast-Ring-Animation (Sekunden) — snappy/dynamisch. Auch von
+/// `App::advance_dash_fire` genutzt, um die Settle-Sequenz nach der Cast-Welle
+/// am Ziel abzuräumen.
+pub const RING_DUR: f32 = 0.38;
 
 /// Breite des (immer sichtbaren) Inventar-Panels oben-rechts. Auch von `draw_hud`
 /// referenziert, damit die combo-Anzeige links daneben weicht statt verdeckt zu
@@ -444,6 +450,29 @@ fn dash_beam_intensity(i: usize, age: Duration) -> f32 {
     let phase = age.as_secs_f32() * 6.0;
     let wave = 0.5 + 0.5 * (i as f32 * 0.6 - phase).sin();
     (0.55 + 0.45 * wave).clamp(0.0, 1.0)
+}
+
+/// Render-Override eines Dash-Burst-Trail-Tiles während der Abschluss-Sequenz.
+/// Reine Funktion über das Tile-Alter: Stagger-Index `k` (= `tile.tick -
+/// start_tick`, 0 = base) bestimmt `dash_settle_at(k+1, speed)`. Vor dem Settle
+/// flackern Zufallsglyphen (zum Settle hin langsamer); danach rastet der feste
+/// Buchstabe (`tile_ch`) ein. Gibt `(Glyph, settled?)` zurück → scroll-immun +
+/// unit-testbar (analog `popup_pulse_line`/`dash_beam_intensity`).
+fn dash_settle_cell(tile_ch: char, k: u32, age: Duration, speed: f32, nonce: u64) -> (char, bool) {
+    let tf = age.as_secs_f32();
+    let settle_at = crate::game::skill::dash_settle_at((k + 1) as i32, speed);
+    if tf >= settle_at {
+        return (tile_ch, true);
+    }
+    // Je näher am Settle, desto langsamer der Bucket-Wechsel (Shuffle bremst aus).
+    let remaining = (settle_at - tf).max(0.0);
+    let flick = (10.0 + 60.0 * remaining).min(70.0);
+    let bucket = (tf * flick) as u64;
+    let seed = ((k + 1) as u64)
+        .wrapping_mul(2_654_435_761)
+        .wrapping_add(bucket)
+        ^ nonce;
+    (crate::game::skill::rand_glyph(seed), false)
 }
 
 /// Untere Steuerzeile, abhängig vom App-Zustand: im Aim-Mode die Aim-Hints,
@@ -557,15 +586,18 @@ fn draw_cast_ring(buf: &mut Buffer, center: (i32, i32), age: Duration, area: Rec
     }
 }
 
-/// Animierter Dash-Vorschau-Strahl: render-time-Math, **fg-only** (wie
-/// `draw_cast_ring` → transparent über dem scrollenden Feld). Zeichnet `range`
-/// Tiles ab `center` (= Cursor-Bildschirmmitte) entlang `dir`, mit fließendem
-/// Hue/Helligkeits-Puls, und ein Reticle `◎` am Lande-Tile.
+/// Animierter Dash-Vorschau-Strahl im **„chars"-Stil** (gewählter Look, #58):
+/// render-time-Math, **fg-only** (wie `draw_cast_ring` → transparent über dem
+/// scrollenden Feld). Zeichnet `steps` Tiles ab `center` (= Cursor-Bildschirmmitte)
+/// entlang `dir` als flackernden Schweif aus **zufälligen Zeichen** mit dezenter
+/// Farb-Animation → liest sich klar als unverbindliche Vorschau (genau die Optik,
+/// in die sich der gesetzte Trail nachher „einfriert"), plus ein Reticle `◎` am
+/// Lande-Tile. `steps` ist bereits aspekt-normiert (gleiche Reichweite je Richtung).
 fn draw_dash_beam(
     buf: &mut Buffer,
     center: (i32, i32),
     dir: (i32, i32),
-    range: u16,
+    steps: i32,
     age: Duration,
     area: Rect,
 ) {
@@ -575,28 +607,65 @@ fn draw_dash_beam(
             && y >= area.top() as i32
             && y < area.bottom() as i32
     };
-    for i in 1..=range as i32 {
+    let t = age.as_secs_f32();
+    for i in 1..=steps {
         let x = center.0 + dir.0 * i;
         let y = center.1 + dir.1 * i;
         if !in_bounds(x, y) {
             continue;
         }
-        let intensity = dash_beam_intensity(i as usize, age);
-        let hue = 200.0 + i as f32 * 8.0 + age.as_secs_f32() * 60.0;
-        let last = i == range as i32;
-        let (ch, col) = if last {
-            ('◎', hsl(hue, 0.6, 0.8))
-        } else {
-            let glyph = if dir.1 == 0 {
-                '─'
-            } else if dir.0 == 0 {
-                '│'
-            } else {
-                '·'
-            };
-            (glyph, hsl(hue, 0.55, 0.45 + 0.35 * intensity))
-        };
+        let frac = i as f32 / steps as f32;
+        let hue = 250.0 + frac * 30.0 + t * 18.0;
+        if i == steps {
+            if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
+                cell.set_char('◎').set_fg(hsl(hue, 0.5, 0.8));
+            }
+            continue;
+        }
+        // Langsamer Shuffle-Bucket → flackernder Code-Schweif; dezenter Lightness-Puls.
+        let bucket = (t * 12.0) as u64;
+        let glyph = crate::game::skill::rand_glyph((i as u64).wrapping_mul(2_654_435_761) ^ bucket);
+        let pulse = dash_beam_intensity(i as usize, age);
         if let Some(cell) = buf.cell_mut((x as u16, y as u16)) {
+            cell.set_char(glyph).set_fg(hsl(hue, 0.32, 0.40 + 0.18 * pulse));
+        }
+    }
+}
+
+/// Dash-Settle-Overlay: zeichnet die Burst-Trail-Tiles der laufenden Abschluss-
+/// Sequenz neu — vor dem Settle flackernde Zufallsglyphen, danach der feste
+/// Buchstabe (gestaffelt base→tip). Cursor-zentrierte Transform wie die Tiles in
+/// `draw_world`; **fg-only**, scroll-immun (Tile-Identität per `tick`). Liegt über
+/// dem Welt-Layer, überschreibt also die normale Trail-Darstellung dieser Tiles.
+fn draw_dash_settle(buf: &mut Buffer, area: Rect, world: &WorldView, df: &crate::app::DashFire) {
+    let Some(p) = world.players.iter().find(|p| p.is_self) else {
+        return;
+    };
+    let (cursor, center) = (
+        p.cursor,
+        (area.width as i32 / 2, area.height as i32 / 2),
+    );
+    let end_tick = df.start_tick + df.steps as u64;
+    for tile in &p.trail {
+        if tile.tick < df.start_tick || tile.tick >= end_tick {
+            continue;
+        }
+        let rx = tile.pos.0 - cursor.0 + center.0;
+        let ry = tile.pos.1 - cursor.1 + center.1;
+        if rx < 0 || ry < 0 || rx >= area.width as i32 || ry >= area.height as i32 {
+            continue;
+        }
+        let k = (tile.tick - df.start_tick) as u32;
+        let (ch, settled) = dash_settle_cell(tile.ch, k, df.age, df.speed, df.nonce);
+        let col = if settled {
+            // Gesetzter Trail-Buchstabe: hell, fast neutral — Teil des Trails.
+            hsl(210.0, 0.10, 0.86)
+        } else {
+            // Shuffle-Look: kühler Farbpuls, der zum Settle hin „einfriert".
+            let hue = 255.0 + (k + 1) as f32 * 5.0 + df.age.as_secs_f32() * 40.0;
+            hsl(hue, 0.42, 0.62)
+        };
+        if let Some(cell) = buf.cell_mut((rx as u16, ry as u16)) {
             cell.set_char(ch).set_fg(col);
         }
     }
@@ -670,7 +739,7 @@ fn draw_inventory(f: &mut Frame, area: Rect, app: &App) {
             app.inventory
                 .prefix_matches(&app.cast_buffer)
                 .into_iter()
-                .map(|p| p.name.clone())
+                .map(|e| e.powerup.name.clone())
                 .collect()
         } else {
             Vec::new()
@@ -679,19 +748,19 @@ fn draw_inventory(f: &mut Frame, area: Rect, app: &App) {
         for (slot, item) in app.inventory.items.iter().enumerate() {
             // Name-Feld: feste Breite (layout-shift-invariant).
             // PRÄZEDENZ: Cast-Modus hat Vorrang vor Pickup-Anim.
-            let line = if app.cast_mode {
+            let mut line = if app.cast_mode {
                 // Shadow-Autocomplete-Highlight (box+dim, Companion Szene 6 `BoxDim`).
-                if matched_names.iter().any(|n| n == &item.name) {
+                if matched_names.iter().any(|n| n == &item.powerup.name) {
                     // Matched: Prefix als HIGHLIGHT_BG/FG-Kasten, Rest als TEXT.
                     // WICHTIG: Zeichenanzahl bleibt exakt gleich — kein Layout-Shift.
                     let typed_len = app
                         .cast_buffer
                         .chars()
                         .count()
-                        .min(item.name.chars().count());
-                    let prefix: String = item.name.chars().take(typed_len).collect();
-                    let rest: String = item.name.chars().skip(typed_len).collect();
-                    let pad = " ".repeat(8usize.saturating_sub(item.name.chars().count()));
+                        .min(item.powerup.name.chars().count());
+                    let prefix: String = item.powerup.name.chars().take(typed_len).collect();
+                    let rest: String = item.powerup.name.chars().skip(typed_len).collect();
+                    let pad = " ".repeat(8usize.saturating_sub(item.powerup.name.chars().count()));
                     Line::from(vec![
                         Span::styled(" ", Style::default().bg(theme::PANEL_BG)),
                         Span::styled(
@@ -709,21 +778,32 @@ fn draw_inventory(f: &mut Frame, area: Rect, app: &App) {
                 } else {
                     // Nicht gematcht: gedimmt (TEXT_DIM, kein BOLD).
                     Line::from(Span::styled(
-                        format!(" {:<8}", item.name),
+                        format!(" {:<8}", item.powerup.name),
                         Style::default().fg(theme::TEXT_DIM).bg(theme::PANEL_BG),
                     ))
                 }
             } else if let Some(anim) = app.pickup_anim.as_ref().filter(|a| a.slot == slot) {
-                popup_pulse_line(&item.name, anim.age)
+                popup_pulse_line(&item.powerup.name, anim.age)
             } else {
                 Line::from(Span::styled(
-                    format!(" {:<8}", item.name),
+                    format!(" {:<8}", item.powerup.name),
                     Style::default()
                         .fg(theme::TEXT)
                         .bg(theme::PANEL_BG)
                         .add_modifier(Modifier::BOLD),
                 ))
             };
+            // Stack-Badge: `×N` in Pink, wenn der Eintrag gestackt ist (Count ≥ 2).
+            // Hängt hinter das feste Namensfeld → kein Layout-Shift der Namen.
+            if item.count >= 2 {
+                line.spans.push(Span::styled(
+                    format!(" ×{}", item.count),
+                    Style::default()
+                        .fg(theme::STACK_BADGE)
+                        .bg(theme::PANEL_BG)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
             lines.push(line);
         }
     }
@@ -1230,6 +1310,59 @@ mod dash_render_tests {
         assert!((0.0..=1.0).contains(&a));
         assert!((0.0..=1.0).contains(&b));
         assert!((a - b).abs() > f32::EPSILON, "beam pulses over time");
+    }
+
+    #[test]
+    fn dash_settle_cell_locks_to_fixed_letter_after_settle() {
+        // Lange nach dem Settle-Zeitpunkt → fester Buchstabe, settled = true.
+        let (ch, settled) = dash_settle_cell('q', 0, Duration::from_secs(10), 1.0, 1);
+        assert_eq!(ch, 'q', "rastet auf den festen Trail-Buchstaben ein");
+        assert!(settled);
+    }
+
+    #[test]
+    fn dash_settle_cell_shuffles_before_settle() {
+        use crate::game::skill::DASH_GLYPHS;
+        let (ch, settled) = dash_settle_cell('q', 0, Duration::ZERO, 1.0, 1);
+        assert!(!settled, "vor settle_at noch am shuffeln");
+        assert!(DASH_GLYPHS.contains(&(ch as u8)), "Shuffle-Glyph aus dem Set");
+    }
+
+    #[test]
+    fn dash_settle_cell_staggers_base_before_tip() {
+        use crate::game::skill::dash_settle_at;
+        // Zeitpunkt, zu dem base (k=0) gerade gesetzt ist, tip (k groß) noch nicht.
+        let age = Duration::from_secs_f32(dash_settle_at(1, 1.0) + 0.001);
+        assert!(dash_settle_cell('a', 0, age, 1.0, 1).1, "base gesetzt");
+        assert!(
+            !dash_settle_cell('a', 10, age, 1.0, 1).1,
+            "tip noch am shuffeln (base→tip gestaffelt)"
+        );
+    }
+
+    #[test]
+    fn inventory_shows_pink_stack_badge_for_count_two_or_more() {
+        use crate::game::powerup::{EffectTag, Powerup};
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut app = App::new();
+        for _ in 0..3 {
+            app.inventory.add(Powerup {
+                id: 0,
+                name: "dash".into(),
+                effect_tag: EffectTag::Dash,
+            });
+        }
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| draw(f, &mut app, Duration::ZERO)).unwrap();
+        let s: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(s.contains("×3"), "×N-Badge sichtbar bei Count ≥ 2");
     }
 
     #[test]

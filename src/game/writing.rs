@@ -394,17 +394,26 @@ impl WritingEngine {
         self.direction = facing;
     }
 
-    /// Trail-Burst: schreibt sofort `range` Trail-Tiles ab dem Cursor entlang
-    /// `dir_delta` (lückenlos), Cursor endet auf dem Lande-Tile. Hält
-    /// `dir_history` Tile-für-Tile synchron (gleiche `tick`-Identität wie der
-    /// Trail), damit `on_backspace` korrekt zurückläuft. Glyph ist ein neutrales
-    /// Dash-Zeichen; `facing` ist die Lauf-Richtung danach.
-    pub fn dash_trail_burst(&mut self, dir_delta: (i32, i32), range: u16, facing: Direction) {
-        for _ in 0..range {
+    /// Trail-Burst: schreibt sofort ein Trail-Tile pro Buchstabe in `letters` ab
+    /// dem Cursor entlang `dir_delta` (lückenlos), Cursor endet auf dem Lande-Tile.
+    /// Die Buchstaben sind die **festen Ziel-Glyphen** des Dash (kein Teleport) —
+    /// ganz normaler Trail (Outplay-Material), in den der Settle-Render einrastet.
+    /// Hält `dir_history` Tile-für-Tile synchron (gleiche `tick`-Identität wie der
+    /// Trail), damit `on_backspace` korrekt zurückläuft. `facing` ist die
+    /// Lauf-Richtung danach. Gibt den `tick` des ersten Burst-Tiles zurück, damit
+    /// der Aufrufer die Settle-Sequenz an diese Tile-Identität binden kann.
+    pub fn dash_trail_burst(
+        &mut self,
+        dir_delta: (i32, i32),
+        letters: &[char],
+        facing: Direction,
+    ) -> u64 {
+        let start_tick = self.tick;
+        for &ch in letters {
             self.dir_history.push((self.tick, self.direction));
             self.trail.push(Tile {
                 pos: self.cursor,
-                ch: '·',
+                ch,
                 tick: self.tick,
                 glow: 0,
                 brightness: TILE_MAX_BRIGHTNESS,
@@ -414,6 +423,7 @@ impl WritingEngine {
             self.tick = self.tick.saturating_add(1);
         }
         self.direction = facing;
+        start_tick
     }
 }
 
@@ -1196,20 +1206,30 @@ mod dash_tests {
     }
 
     #[test]
-    fn trail_burst_writes_range_tiles_and_lands() {
+    fn trail_burst_writes_one_tile_per_letter_and_lands() {
         let mut e = WritingEngine::new((0, 0)); // cursor (0,0)
-        e.dash_trail_burst((1, 0), 4, Direction::Right);
+        e.dash_trail_burst((1, 0), &['w', 'x', 'y', 'z'], Direction::Right);
         assert_eq!(e.cursor, (4, 0), "cursor ends at the landing tile");
-        assert_eq!(e.trail.len(), 4, "exactly range tiles written");
+        assert_eq!(e.trail.len(), 4, "exactly one tile per letter");
         // Tiles sit on the stepped path p_0..p_3.
         let positions: Vec<(i32, i32)> = e.trail.iter().map(|t| t.pos).collect();
         assert_eq!(positions, vec![(0, 0), (1, 0), (2, 0), (3, 0)]);
     }
 
     #[test]
+    fn trail_burst_writes_the_fixed_letters_as_tile_chars() {
+        // Die festen Buchstaben landen base→tip als echte Trail-Bestandteile (kein
+        // Platzhalter-Glyph mehr) — Outplay-Material, in das der Settle einrastet.
+        let mut e = WritingEngine::new((0, 0));
+        e.dash_trail_burst((1, 0), &['a', 'b', 'c'], Direction::Right);
+        let chars: Vec<char> = e.trail.iter().map(|t| t.ch).collect();
+        assert_eq!(chars, vec!['a', 'b', 'c']);
+    }
+
+    #[test]
     fn trail_burst_keeps_dir_history_in_sync_for_backspace() {
         let mut e = WritingEngine::new((2, 2));
-        e.dash_trail_burst((0, 1), 3, Direction::Down); // burst downward
+        e.dash_trail_burst((0, 1), &['q', 'r', 's'], Direction::Down); // burst downward
         assert_eq!(
             e.dir_history.len(),
             e.trail.len(),

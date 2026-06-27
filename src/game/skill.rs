@@ -36,6 +36,9 @@ pub struct SkillDef {
     pub rarity_weight: f32,
     pub effect_tag: EffectTag,
     pub activation: Activation,
+    /// Ob sich mehrere Pickups dieses Skills zu EINEM Inventar-Eintrag mit Count
+    /// (`×N`) stapeln (`dash`) — oder jedes Pickup eine eigene Zeile bekommt.
+    pub stackable: bool,
 }
 
 /// Der Katalog. Heute: `dash` (gezielt, 8 Richtungen, feste Distanz 6),
@@ -51,20 +54,74 @@ pub fn registry() -> &'static [SkillDef] {
                 dirs: DirSet::Eight,
                 range: 6,
             }),
+            stackable: true,
         },
         SkillDef {
             name: "revert",
             rarity_weight: 0.6,
             effect_tag: EffectTag::Test,
             activation: Activation::Instant,
+            stackable: false,
         },
         SkillDef {
             name: "warp",
             rarity_weight: 0.3,
             effect_tag: EffectTag::Test,
             activation: Activation::Instant,
+            stackable: false,
         },
     ]
+}
+
+/// Glyph-Alphabet des Dash-Strahls/Trails: code-artige Zeichen, in die sich der
+/// Trail nach dem Settle „einfriert" (und aus denen der Shuffle zufällig zieht).
+pub const DASH_GLYPHS: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789{}[]<>/=+*&^%$#";
+
+/// Deterministischer „Zufalls"-Glyph aus einem Seed (kein rng nötig → stabil pro
+/// Frame-Bucket, reproduzierbar). Geteilt von Trail-Burst (feste Buchstaben),
+/// Settle-Shuffle und Vorschau-Strahl.
+pub fn rand_glyph(seed: u64) -> char {
+    let h = seed
+        .wrapping_mul(2_654_435_761)
+        .wrapping_add(0x9E37_79B9_7F4A_7C15);
+    DASH_GLYPHS[(h % DASH_GLYPHS.len() as u64) as usize] as char
+}
+
+/// Aspekt-normierte Schritt-Anzahl (Tiles) des Dash für eine Richtung: vertikale
+/// Zellen zählen ~2× (2:1-Zellaspekt, wie der Cast-Ring), damit ALLE 8 Richtungen
+/// visuell gleich weit reichen. Die Reichweite skaliert mit dem Stack-Count
+/// (`stack`) — der `×N`-Identifier treibt die Länge des Dash.
+pub fn dash_steps(dir: (i32, i32), stack: u32) -> i32 {
+    let beam_reach = 20.0 + 10.0 * stack as f32; // moderat angehobene Basis + länger pro Stack
+    let step_len = (((dir.0 * dir.0) + (2 * dir.1) * (2 * dir.1)) as f32)
+        .sqrt()
+        .max(1.0);
+    (beam_reach / step_len).round().max(1.0) as i32
+}
+
+/// Speed-Faktor aus dem Stack-Count: mehr Stacks → schnellerer Dash (kürzere
+/// Settle-Zeit + frühere Aktivierung). Der Cursor springt ohnehin sofort; dieser
+/// Faktor bestimmt, wie schnell die Abschluss-Sequenz einrastet. Bewusst hohes
+/// Basis-Tempo (#58-Balance), damit der Dash als snappy Burst klar schneller wirkt
+/// als normales Schreiben — ein echter Vorteil statt langsamer „Materialisierung".
+pub fn dash_speed(stack: u32) -> f32 {
+    2.8 + 0.6 * (stack.saturating_sub(1)) as f32
+}
+
+// Dash-Abschluss-Timeline (Sekunden ab Cast), Stack-Speed-skaliert. Kurz gehalten
+// (#58-Balance): der Settle ist nur ein schnelles Aufflackern (der Cursor ist eh
+// sofort am Ziel) — spürbar flott, aber das Shuffle→Einrasten bleibt sichtbar.
+/// Zeitpunkt, zu dem das erste (base-nahe) Tile aufhört zu shuffeln und einrastet.
+pub const DASH_SETTLE_BASE: f32 = 0.12;
+/// Versatz pro Tile — die Tiles setzen sich gestaffelt base→tip.
+pub const DASH_SETTLE_STAGGER: f32 = 0.03;
+
+/// Settle-Zeitpunkt (s ab Cast) für das `i`-te Dash-Tile (i=1 base … i=steps tip),
+/// durch den Stack-`speed` beschleunigt. `dash_settle_at(steps, speed)` ist der
+/// **Skill-Abschluss** → Auslöser der Aktivierung-am-Ziel. Reine Funktion →
+/// scroll-immun + unit-testbar (geteilt von App-Advance und Settle-Render).
+pub fn dash_settle_at(i: i32, speed: f32) -> f32 {
+    (DASH_SETTLE_BASE + i as f32 * DASH_SETTLE_STAGGER) / speed.max(0.001)
 }
 
 /// Skill per Name (case-insensitiv) nachschlagen.
@@ -156,6 +213,59 @@ mod tests {
     #[test]
     fn every_skill_has_a_positive_rarity_weight() {
         assert!(registry().iter().all(|d| d.rarity_weight > 0.0));
+    }
+
+    #[test]
+    fn dash_is_stackable_others_are_not() {
+        assert!(skill_def("dash").unwrap().stackable, "dash stacks (×N)");
+        assert!(!skill_def("revert").unwrap().stackable);
+        assert!(!skill_def("warp").unwrap().stackable);
+    }
+
+    #[test]
+    fn dash_steps_scale_with_stack() {
+        // Mehr Stack → längerer Dash (monoton wachsend, gleiche Richtung).
+        let s1 = dash_steps((1, 0), 1);
+        let s3 = dash_steps((1, 0), 3);
+        assert!(s3 > s1, "×3 reicht weiter als ×1 ({s3} > {s1})");
+    }
+
+    #[test]
+    fn dash_steps_are_aspect_normalized_equal_reach() {
+        // 2:1-Zellaspekt: vertikale Schritte zählen doppelt → vertikal ~halb so
+        // viele Tiles wie horizontal, damit der Strahl visuell gleich weit reicht.
+        let horiz = dash_steps((1, 0), 1);
+        let vert = dash_steps((0, 1), 1);
+        assert!(vert < horiz, "vertikal weniger Tiles als horizontal");
+        // Grob doppelt so viele horizontale wie vertikale Tiles.
+        assert!((horiz as f32 / vert as f32 - 2.0).abs() < 0.4);
+    }
+
+    #[test]
+    fn dash_speed_is_snappy_and_grows_with_stack() {
+        // Hohes Basis-Tempo (#58-Balance): der Dash rastet deutlich schneller ein
+        // als normales Schreiben es einholen könnte, und skaliert mit dem Stack.
+        assert!(dash_speed(1) >= 2.0, "Basis-Tempo snappy genug");
+        assert!(dash_speed(3) > dash_speed(1));
+    }
+
+    #[test]
+    fn dash_settle_staggers_base_before_tip() {
+        // Späteres (tip-näheres) Tile rastet später ein als ein früheres (base).
+        assert!(dash_settle_at(5, 1.0) > dash_settle_at(1, 1.0));
+    }
+
+    #[test]
+    fn dash_settle_is_faster_at_higher_speed() {
+        // Mehr Stack-Speed → früherer Abschluss (kürzere Settle-Zeit).
+        assert!(dash_settle_at(6, 2.0) < dash_settle_at(6, 1.0));
+    }
+
+    #[test]
+    fn rand_glyph_is_deterministic_in_charset() {
+        assert_eq!(rand_glyph(42), rand_glyph(42), "selber Seed → selber Glyph");
+        let g = rand_glyph(7);
+        assert!(DASH_GLYPHS.contains(&(g as u8)), "Glyph aus dem Charset");
     }
 
     #[test]
