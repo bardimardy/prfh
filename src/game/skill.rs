@@ -92,7 +92,7 @@ pub fn rand_glyph(seed: u64) -> char {
 /// visuell gleich weit reichen. Die Reichweite skaliert mit dem Stack-Count
 /// (`stack`) — der `×N`-Identifier treibt die Länge des Dash.
 pub fn dash_steps(dir: (i32, i32), stack: u32) -> i32 {
-    let beam_reach = 14.0 + 10.0 * stack as f32; // länger pro Stack
+    let beam_reach = 20.0 + 10.0 * stack as f32; // moderat angehobene Basis + länger pro Stack
     let step_len = (((dir.0 * dir.0) + (2 * dir.1) * (2 * dir.1)) as f32)
         .sqrt()
         .max(1.0);
@@ -105,14 +105,16 @@ pub fn dash_steps(dir: (i32, i32), stack: u32) -> i32 {
 /// Basis-Tempo (#58-Balance), damit der Dash als snappy Burst klar schneller wirkt
 /// als normales Schreiben — ein echter Vorteil statt langsamer „Materialisierung".
 pub fn dash_speed(stack: u32) -> f32 {
-    2.5 + 0.6 * (stack.saturating_sub(1)) as f32
+    2.8 + 0.6 * (stack.saturating_sub(1)) as f32
 }
 
-// Dash-Abschluss-Timeline (Sekunden ab Cast), Stack-Speed-skaliert:
+// Dash-Abschluss-Timeline (Sekunden ab Cast), Stack-Speed-skaliert. Kurz gehalten
+// (#58-Balance): der Settle ist nur ein schnelles Aufflackern (der Cursor ist eh
+// sofort am Ziel) — spürbar flott, aber das Shuffle→Einrasten bleibt sichtbar.
 /// Zeitpunkt, zu dem das erste (base-nahe) Tile aufhört zu shuffeln und einrastet.
-pub const DASH_SETTLE_BASE: f32 = 0.28;
+pub const DASH_SETTLE_BASE: f32 = 0.12;
 /// Versatz pro Tile — die Tiles setzen sich gestaffelt base→tip.
-pub const DASH_SETTLE_STAGGER: f32 = 0.05;
+pub const DASH_SETTLE_STAGGER: f32 = 0.03;
 
 /// Settle-Zeitpunkt (s ab Cast) für das `i`-te Dash-Tile (i=1 base … i=steps tip),
 /// durch den Stack-`speed` beschleunigt. `dash_settle_at(steps, speed)` ist der
